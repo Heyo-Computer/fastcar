@@ -1,0 +1,24 @@
+{
+  "name": "fastcar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@fastcar/server",
+    "dev:web": "npm run dev --workspace=@fastcar/web",
+    "build": "npm run build --workspace=@fastcar/shared && npm run build --workspace=@fastcar/web && npm run build --workspace=@fastcar/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "migrate": "npm run migrate --workspace=@fastcar/server",
+    "smoke": "npm run smoke --workspace=@fastcar/server",
+    "smoke:ws": "npm run smoke:ws --workspace=@fastcar/server",
+    "start": "npm run start --workspace=@fastcar/server"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

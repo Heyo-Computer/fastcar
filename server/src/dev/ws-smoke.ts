@@ -1,0 +1,146 @@
+/**
+ * Scripted WebSocket client that exercises the full server: creates a thread,
+ * prompts, answers a question, runs the plan flow, and replays history.
+ * Expects the server to already be running in mock mode:
+ *   FASTCAR_MOCK=1 DATABASE_URL=... npm run dev
+ * Then:
+ *   npm run smoke:ws
+ */
+import WebSocket from "ws";
+import type { ClientMessage, ServerMessage, ThreadHistoryResponse } from "@fastcar/shared";
+
+const BASE = process.env.FASTCAR_URL ?? "http://localhost:3000";
+const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws`);
+
+const received: ServerMessage[] = [];
+let threadId = "";
+
+function send(msg: ClientMessage): void {
+  ws.send(JSON.stringify(msg));
+}
+
+function waitFor<T extends ServerMessage["type"]>(
+  type: T,
+  pred: (m: Extract<ServerMessage, { type: T }>) => boolean = () => true,
+  timeoutMs = 30_000,
+): Promise<Extract<ServerMessage, { type: T }>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`timeout waiting for ${type}`)),
+      timeoutMs,
+    );
+    const check = (m: ServerMessage) => {
+      if (m.type === type && pred(m as Extract<ServerMessage, { type: T }>)) {
+        clearTimeout(timer);
+        listeners.delete(check);
+        resolve(m as Extract<ServerMessage, { type: T }>);
+      }
+    };
+    listeners.add(check);
+  });
+}
+
+const listeners = new Set<(m: ServerMessage) => void>();
+ws.on("message", (raw: Buffer) => {
+  const msg = JSON.parse(raw.toString()) as ServerMessage;
+  received.push(msg);
+  for (const l of [...listeners]) l(msg);
+});
+
+function assert(cond: unknown, label: string): void {
+  if (!cond) throw new Error(`ASSERT FAILED: ${label}`);
+  console.log(`ok: ${label}`);
+}
+
+ws.on("open", () => {
+  void (async () => {
+    await waitFor("hello");
+    assert(true, "received hello with thread list");
+
+    // 1. Basic prompt flow
+    send({ type: "create_thread" });
+    const created = await waitFor("thread_created");
+    threadId = created.thread.id;
+    send({ type: "prompt", threadId, text: "hello, look around" });
+    await waitFor("status", (m) => m.threadId === threadId && m.status === "running");
+    await waitFor(
+      "event",
+      (m) => m.threadId === threadId && m.ev.kind === "tool_end",
+    );
+    await waitFor("status", (m) => m.threadId === threadId && m.status === "idle");
+    assert(true, "prompt → tool call → idle");
+
+    // 2. ask_user round trip
+    send({ type: "prompt", threadId, text: "ask me something please" });
+    const q = await waitFor("question", (m) => m.threadId === threadId);
+    send({ type: "answer_question", threadId, questionId: q.questionId, answer: "vanilla" });
+    await waitFor("status", (m) => m.threadId === threadId && m.status === "idle");
+    assert(true, "question answered and run completed");
+
+    // 3. plan flow
+    send({ type: "create_thread", mode: "plan" });
+    const planThread = (await waitFor("thread_created", (m) => m.thread.mode === "plan")).thread.id;
+    send({ type: "prompt", threadId: planThread, text: "plan a refactor" });
+    const plan = await waitFor("plan_ready", (m) => m.threadId === planThread, 30_000);
+    assert(plan.planMarkdown.includes("Plan"), "plan submitted and surfaced");
+    send({ type: "approve_plan", threadId: planThread });
+    await waitFor("status", (m) => m.threadId === planThread && m.status === "idle", 30_000);
+    assert(true, "plan approved and executed");
+
+    // 4. subagent delegation
+    send({ type: "prompt", threadId, text: "please delegate this exploration" });
+    const sub = await waitFor(
+      "event",
+      (m) => m.threadId === threadId && m.agent === "minimodel",
+    );
+    assert(sub.taskId != null, "subagent events carry taskId");
+    await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
+    assert(true, "delegation completed");
+
+    // 5. add repo via the agent (mock emits git_clone with the URL from the prompt)
+    const bareRepo = process.env.FASTCAR_SMOKE_BARE_REPO;
+    if (bareRepo) {
+      const repoName = `wssmoke-${Date.now()}`;
+      send({ type: "add_repo", url: bareRepo, name: repoName });
+      const repos = await waitFor(
+        "repos_updated",
+        (m) => m.repos.some((r) => r.name === repoName),
+        60_000,
+      );
+      const repo = repos.repos.find((r) => r.name === repoName)!;
+      assert(repo.branch != null, `repo cloned via agent and status reports branch (${repo.branch})`);
+      const reposRes = await fetch(`${BASE}/api/repos`);
+      const reposJson = (await reposRes.json()) as { repos: Array<{ name: string }> };
+      assert(
+        reposJson.repos.some((r) => r.name === repoName),
+        "GET /api/repos lists the new repository",
+      );
+    } else {
+      console.log("skip: add_repo flow (set FASTCAR_SMOKE_BARE_REPO to enable)");
+    }
+
+    // 6. history replay
+    const res = await fetch(`${BASE}/api/threads/${threadId}/events`);
+    const history = (await res.json()) as ThreadHistoryResponse;
+    assert(history.events.some((e) => e.kind === "user_message"), "history has user messages");
+    assert(history.events.some((e) => e.kind === "tool_call"), "history has tool calls");
+    assert(history.events.some((e) => e.kind === "assistant_text"), "history has assistant text");
+    assert(
+      history.events.some((e) => e.agent === "minimodel"),
+      "history has subagent rows",
+    );
+    const seqs = history.events.map((e) => e.seq);
+    assert(
+      seqs.every((s, i) => i === 0 || s > seqs[i - 1]!),
+      "event seq strictly increasing",
+    );
+
+    console.log("\nALL WS SMOKE TESTS PASSED");
+    ws.close();
+    process.exit(0);
+  })().catch((err) => {
+    console.error(err);
+    console.error("last 5 messages:", JSON.stringify(received.slice(-5), null, 2));
+    process.exit(1);
+  });
+});

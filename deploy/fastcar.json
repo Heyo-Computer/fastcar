@@ -1,0 +1,56 @@
+{
+  "id": "fastcar",
+  "routes": [
+    { "host": "fastcar.example.com" }
+  ],
+  "vm": {
+    "driver": "firecracker",
+    "image": "fastcar",
+    "port": 3000,
+    "start_command": "/opt/fastcar/start.sh",
+    "size_class": "large",
+    "disk_size_gb": 40,
+    "ttl_seconds": 86400,
+    "env_vars": {
+      "INCEPTION_API_KEY": "REPLACE_ME_INCEPTION_API_KEY",
+      "OPENROUTER_API_KEY": "REPLACE_ME_OPENROUTER_API_KEY",
+      "TAVILY_API_KEY": "REPLACE_ME_TAVILY_API_KEY",
+      "MAXCODING_MODEL": "anthropic/claude-sonnet-4.5",
+      "MINIMODEL_MODEL": "google/gemini-2.5-flash-lite",
+      "TRANSCRIBE_MODEL": "openai/whisper-large-v3",
+      "DATABASE_URL": "postgres://fastcar:fastcar@127.0.0.1:5432/fastcar",
+      "PORT": "3000",
+      "FASTCAR_WORKDIR": "/workspace",
+      "FASTCAR_DATA_DIR": "/workspace/fastcar",
+      "FASTCAR_REPOS_DIR": "/workspace/repos",
+      "FASTCAR_GIT_NAME": "fastcar",
+      "FASTCAR_GIT_EMAIL": "fastcar@example.com",
+      "FASTCAR_MOCK": "0"
+    }
+  },
+  "scaling": {
+    "min_replicas": 1,
+    "max_replicas": 1,
+    "warm_pool": 0,
+    "target_concurrency": 64,
+    "scale_to_zero_after_secs": 0,
+    "cold_start_timeout_secs": 180,
+    "boot_timeout_secs": 300,
+    "drain_timeout_secs": 60,
+    "idle_action": "retain"
+  },
+  "health": {
+    "path": "/api/health",
+    "timeout_secs": 2
+  },
+  "build": {
+    "repo": "https://github.com/REPLACE_ME_ORG/fastcar.git",
+    "dockerfile": "deploy/image/Dockerfile",
+    "context": ".",
+    "image_name": "fastcar"
+  },
+  "feed": {
+    "announce": true,
+    "issues": true
+  }
+}
