@@ -1,4 +1,5 @@
 import pg from "pg";
+import "../env.js";
 
 let pool: pg.Pool | undefined;
 

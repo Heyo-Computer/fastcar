@@ -69,13 +69,21 @@ serverctl apply -f deploy/fastcar.json
 ```bash
 npm install
 cp .env.example .env       # fill in keys and DATABASE_URL
+docker run -d --name fastcar-pg -p 5433:5432 \
+  -e POSTGRES_USER=fastcar -e POSTGRES_PASSWORD=fastcar -e POSTGRES_DB=fastcar \
+  postgres:16            # or point DATABASE_URL at your own Postgres
 npm run migrate
 npm run dev                # server on :3000 (serves web/dist if built)
-npm run dev:web            # optional: Vite dev server on :5173 with HMR
+npm run dev:web            # UI with HMR on :5173, proxying /api + /ws to :3000
 ```
 
-Build the UI for single-process serving: `npm run build`, then `npm start`
-and open http://localhost:3000.
+The server reads `.env` from the repo root (falling back to `server/.env`, or
+`FASTCAR_ENV_FILE` if set) — real environment variables always take precedence,
+which is how the deployed VM supplies config with no `.env` present.
+
+For the UI, either run `npm run dev:web` and open http://localhost:5173, or
+build once for single-process serving — `npm run build`, then `npm run dev`
+(or `npm start`) serves `web/dist` at http://localhost:3000.
 
 ### Mock mode (no API keys)
 
@@ -114,6 +122,7 @@ npm run smoke:git --workspace=@fastcar/server   # git clone/branch/commit/push r
 | `FASTCAR_GIT_NAME` / `FASTCAR_GIT_EMAIL` | Commit identity if the VM has no global git config | unset |
 | `FASTCAR_DATA_DIR` | App state (Pi auth/models/sessions) — keep outside the workdir | `./.fastcar` |
 | `FASTCAR_MOCK` | `1` = keyless mock mode | `0` |
+| `FASTCAR_ENV_FILE` | Explicit env file to load instead of `.env` | unset |
 | `PORT` | HTTP port | `3000` |
 
 ## Using it
