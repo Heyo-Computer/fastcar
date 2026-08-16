@@ -30,7 +30,31 @@
 # node:22 on Debian bookworm: fastcar needs Node >= 22.19 (Pi SDK), and the
 # official image's glibc userland boots fine under Firecracker. Pinned to the
 # major only — the app pins its own dependencies via package-lock.json.
-FROM node:22-bookworm
+#
+# -slim, and that is load-bearing rather than tidiness. heyvmd's
+# `POST /sandbox-deploy` is fully synchronous — it copies this rootfs to
+# run/<id>/rootfs.ext4 and boots the VM inside the HTTP request — while app-lb's
+# SDK client gives that call 30s. The copy only avoids being a byte-for-byte
+# read/write when the image store is on XFS-with-reflink or btrfs; on ext4 (what
+# us2 runs) `reflink_or_copy` falls back to a full copy, measured at ~26s for the
+# 2094 MB image the non-slim base produced. That overran the timeout on every
+# single create, so the pool never got a VM and the deployment never came up —
+# with no boot failure to show for it, because the guest was never reached.
+#
+# The full bookworm base carries ~760 MB of build toolchain (gcc, python3, the
+# node-gyp prerequisites) that nothing here needs at runtime: every dependency
+# below resolves to a prebuilt binary, so -slim builds clean. Measured on this
+# tree: export tar 1691 MB -> 929 MB, rootfs 2094 MB -> 1178 MB, copy 26s -> 9s.
+#
+# Keep it small. Rootfs bytes are paid on every cold boot against that 30s
+# budget, so anything added here is spent twice — once on disk, once on latency.
+# Two things to reach for before the base image if it grows again: `postgresql`
+# is only there for the *local* fallback DB and is dead weight whenever
+# vm.env_vars sets an external DATABASE_URL, and `npm install` keeps the web
+# build's devDependencies (vite, tailwind, typescript) in the runtime tree.
+# Neither is free to remove — init.sh probes for initdb, and `npm prune
+# --omit=dev` would take tsx with it, which start.sh runs the server through.
+FROM node:22-bookworm-slim
 
 # System deps, per heyvm image conventions plus fastcar's own needs:
 #   iproute2        — init.sh brings eth0 up; the kernel's ip= only assigns it
@@ -97,6 +121,17 @@ RUN test -x /init.sh \
     && node_modules/.bin/tsx --version \
     && test -f web/dist/index.html \
     && echo "image checks passed"
+
+# The utilities init.sh and preflight.sh call that arrive with the *base image*
+# rather than an apt line above, so nothing names them and a base swap can drop
+# one silently. Each failure here is invisible until a VM is booted: without
+# `hostname`/`dmesg` init.sh merely logs noise, but a missing `blkid` makes it
+# reformat the data disk on every boot, and a missing `su` leaves Postgres
+# unstarted while the guest still prints HEYVM_READY and passes its health check.
+RUN for bin in hostname dmesg blkid su mountpoint; do \
+        command -v "$bin" >/dev/null || { echo "missing base utility: $bin"; exit 1; }; \
+    done \
+    && echo "base utility checks passed"
 
 # Documentation only — docker export drops both. 3000 is the guest port app-lb
 # proxies and health-checks (vm.port in fastcar.json).
