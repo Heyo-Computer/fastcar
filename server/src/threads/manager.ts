@@ -131,6 +131,37 @@ export class ThreadManager {
     if (rt.status === "awaiting_approval")
       throw new Error("approve or reject the pending plan first");
 
+    // Handle slash commands locally before delegating to the conductor.
+    if (text.startsWith("/")) {
+      const parts = text.trim().split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const args = parts.slice(1);
+      switch (cmd) {
+        case "/compaction": {
+          // Placeholder: in a real implementation this would trigger repo compaction.
+          const msg = "✅ Compaction command received – no operation performed in this demo.";
+          this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: msg });
+          await this.flushStaged(rt);
+          return;
+        }
+        case "/context": {
+          // Return current repository statuses as a message.
+          const repos = await collectRepoStatuses();
+          const repoList = repos.map(r => `${r.name} (${r.branch ?? "?"})`).join("\n");
+          const msg = `🗂️ Current repositories:\n${repoList}`;
+          this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: msg });
+          await this.flushStaged(rt);
+          return;
+        }
+        default:
+          // Unknown command – inform the user.
+          const msg = `❓ Unknown command: ${cmd}`;
+          this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: msg });
+          await this.flushStaged(rt);
+          return;
+      }
+    }
+
     const conductor = await this.ensureConductor(rt);
     rt.status = "running";
     await threadsDb.updateThread(threadId, { status: "running" });
