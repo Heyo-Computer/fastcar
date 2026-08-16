@@ -13,9 +13,11 @@ import * as threadsDb from "../db/threads.js";
 import { toMeta } from "../db/threads.js";
 import { createConductorSession, type ConductorHandle } from "../pi/conductor.js";
 import { collectRepoStatuses, gitEvents } from "../services/git.js";
+import { expandMentions } from "../services/mentions.js";
 import { translateSessionEvent } from "../pi/events.js";
 import type { FastcarModels } from "../pi/runtime.js";
 import type { SubagentKind, SubagentManager } from "../pi/subagents.js";
+import { findCommand, parseCommandLine, runCommand } from "./commands.js";
 
 type Broadcast = (msg: ServerMessage) => void;
 
@@ -35,6 +37,8 @@ interface ThreadRuntime {
   /** Complete items staged for the PG flush at agent_end. */
   staged: EventInsert[];
   pendingQuestion: PendingQuestion | null;
+  /** Serializes state-changing work on this thread; see `enqueue`. */
+  queue: Promise<unknown>;
   submittedPlan: string | null;
   /** Rolling text of the current assistant message, for title + plan fallback. */
   lastAssistantText: string;
@@ -45,6 +49,7 @@ const DELTA_COALESCE_MS = 30;
 
 export class ThreadManager {
   private runtimes = new Map<string, ThreadRuntime>();
+  private runtimeLoads = new Map<string, Promise<ThreadRuntime>>();
   private clients = new Set<Broadcast>();
   private deltaBuffers = new Map<string, { agent: AgentName; taskId?: string; kind: "text_delta" | "thinking_delta"; text: string }>();
   private deltaTimer: NodeJS.Timeout | null = null;
@@ -116,55 +121,43 @@ export class ThreadManager {
   async setMode(threadId: string, mode: ThreadMode): Promise<void> {
     const rt = await this.getRuntime(threadId);
     if (rt.status !== "idle") throw new Error("cannot change mode while the agent is busy");
+    await this.applyMode(rt, mode);
+  }
+
+  /**
+   * `emit: false` defers the broadcast to the caller — a command must not
+   * announce its state change before it has finished, or a client can act on
+   * the new state while the command still holds the thread.
+   */
+  private async applyMode(rt: ThreadRuntime, mode: ThreadMode, emit = true): Promise<void> {
     rt.mode = mode;
-    await threadsDb.updateThread(threadId, { mode });
+    await threadsDb.updateThread(rt.id, { mode });
     await rt.conductor?.refreshSystemPrompt();
-    await this.emitStatus(rt);
+    if (emit) await this.emitStatus(rt);
   }
 
   // ---------------------------------------------------------------- prompt
 
   async prompt(threadId: string, text: string): Promise<void> {
     const rt = await this.getRuntime(threadId);
-    if (rt.status === "running") throw new Error("agent is already running — use steer");
-    if (rt.status === "awaiting_input") throw new Error("answer the pending question first");
-    if (rt.status === "awaiting_approval")
-      throw new Error("approve or reject the pending plan first");
+    return this.enqueue(rt, () => this.startPrompt(rt, text));
+  }
 
-    // Handle slash commands locally before delegating to the conductor.
-    if (text.startsWith("/")) {
-      const parts = text.trim().split(/\s+/);
-      const cmd = parts[0]?.toLowerCase() ?? "";
-      const args = parts.slice(1);
-      switch (cmd) {
-        case "/compaction": {
-          // Placeholder: in a real implementation this would trigger repo compaction.
-          const msg = "✅ Compaction command received – no operation performed in this demo.";
-          this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: msg });
-          await this.flushStaged(rt);
-          return;
-        }
-        case "/context": {
-          // Return current repository statuses as a message.
-          const repos = await collectRepoStatuses();
-          const repoList = repos.map(r => `${r.name} (${r.branch ?? "?"})`).join("\n");
-          const msg = `🗂️ Current repositories:\n${repoList}`;
-          this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: msg });
-          await this.flushStaged(rt);
-          return;
-        }
-        default:
-          // Unknown command – inform the user.
-          const msg = `❓ Unknown command: ${cmd}`;
-          this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: msg });
-          await this.flushStaged(rt);
-          return;
-      }
+  private async startPrompt(rt: ThreadRuntime, text: string): Promise<void> {
+    this.assertAcceptsWork(rt);
+
+    // A slash command may arrive as ordinary prompt text (pasted, or from a
+    // non-browser client). Only intercept names the registry actually knows, so
+    // a message that merely starts with a path stays a prompt. Call the inner
+    // form: we already hold the thread's queue slot.
+    const parsed = parseCommandLine(text);
+    if (parsed && findCommand(parsed.name)) {
+      return this.runSlashCommand(rt, parsed.name, parsed.args);
     }
 
     const conductor = await this.ensureConductor(rt);
     rt.status = "running";
-    await threadsDb.updateThread(threadId, { status: "running" });
+    await threadsDb.updateThread(rt.id, { status: "running" });
     await this.emitStatus(rt);
 
     this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text });
@@ -172,7 +165,57 @@ export class ThreadManager {
     // crash mid-run still keeps the user's prompt in history.
     await this.flushStaged(rt);
 
-    void this.runPrompt(rt, conductor, text);
+    // The transcript keeps the mentions as typed; the model gets them resolved.
+    void this.runPrompt(rt, conductor, await expandMentions(this.cfg, text));
+  }
+
+  /** Shared entry guard for anything that starts new work on a thread. */
+  private assertAcceptsWork(rt: ThreadRuntime): void {
+    if (rt.status === "running") throw new Error("agent is already running — use steer");
+    if (rt.status === "awaiting_input") throw new Error("answer the pending question first");
+    if (rt.status === "awaiting_approval")
+      throw new Error("approve or reject the pending plan first");
+  }
+
+  // ---------------------------------------------------------------- commands
+
+  /**
+   * Run a slash command and render its output into the thread. Commands never
+   * reach the model: they read app state, or drive the thread directly.
+   */
+  async command(threadId: string, name: string, args = ""): Promise<void> {
+    const rt = await this.getRuntime(threadId);
+    return this.enqueue(rt, () => this.runSlashCommand(rt, name, args));
+  }
+
+  /** Must run inside the thread's queue slot. */
+  private async runSlashCommand(rt: ThreadRuntime, name: string, args: string): Promise<void> {
+    this.assertAcceptsWork(rt);
+
+    const line = `/${name}${args ? ` ${args}` : ""}`;
+    this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text: line });
+
+    let modeChanged = false;
+    try {
+      const output = await runCommand(name, {
+        cfg: this.cfg,
+        threadId: rt.id,
+        args,
+        mode: rt.mode,
+        session: rt.conductor?.session ?? null,
+        setMode: async (mode) => {
+          await this.applyMode(rt, mode, false);
+          modeChanged = true;
+        },
+      });
+      this.stageAndSend(rt, "conductor", undefined, { kind: "system", text: output });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.stageAndSend(rt, "conductor", undefined, { kind: "error", message: `${line}: ${message}` });
+    } finally {
+      await this.flushStaged(rt);
+      if (modeChanged) await this.emitStatus(rt);
+    }
   }
 
   private async runPrompt(rt: ThreadRuntime, conductor: ConductorHandle, text: string): Promise<void> {
@@ -220,7 +263,7 @@ export class ThreadManager {
     const rt = this.runtimes.get(threadId);
     if (!rt?.conductor || rt.status !== "running") throw new Error("agent is not running");
     this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text: `(steer) ${text}` });
-    await rt.conductor.session.steer(text);
+    await rt.conductor.session.steer(await expandMentions(this.cfg, text));
   }
 
   async abort(threadId: string): Promise<void> {
@@ -285,12 +328,36 @@ export class ThreadManager {
 
   // ---------------------------------------------------------------- conductor wiring
 
+  /**
+   * Serialize state-changing work on one thread. Every WS frame is handled in
+   * its own async task (and several clients can drive the same thread), so
+   * without this two prompts or commands interleave at their first await and
+   * see each other's half-applied state.
+   */
+  private enqueue<T>(rt: ThreadRuntime, work: () => Promise<T>): Promise<T> {
+    const next = rt.queue.then(work, work);
+    rt.queue = next.catch(() => undefined);
+    return next;
+  }
+
   private async getRuntime(threadId: string): Promise<ThreadRuntime> {
-    let rt = this.runtimes.get(threadId);
-    if (rt) return rt;
+    const existing = this.runtimes.get(threadId);
+    if (existing) return existing;
+    // Concurrent first touches of the same thread must share one runtime, or
+    // the queue above would serialize against two different objects.
+    const loading = this.runtimeLoads.get(threadId) ?? this.loadRuntime(threadId);
+    this.runtimeLoads.set(threadId, loading);
+    try {
+      return await loading;
+    } finally {
+      this.runtimeLoads.delete(threadId);
+    }
+  }
+
+  private async loadRuntime(threadId: string): Promise<ThreadRuntime> {
     const rec = await threadsDb.getThread(threadId);
     if (!rec) throw new Error(`no such thread: ${threadId}`);
-    rt = {
+    const rt: ThreadRuntime = {
       id: threadId,
       mode: rec.mode,
       status: rec.status,
@@ -299,6 +366,7 @@ export class ThreadManager {
       seq: await maxSeq(threadId),
       staged: [],
       pendingQuestion: null,
+      queue: Promise.resolve(),
       submittedPlan: null,
       lastAssistantText: "",
       creating: null,
@@ -433,6 +501,8 @@ export class ThreadManager {
     switch (ev.kind) {
       case "user_message":
         return { ...base, kind: "user_message", payload: { text: ev.text } };
+      case "system":
+        return { ...base, kind: "system", payload: { text: ev.text } };
       case "message_end":
         if (!ev.text && !ev.thinking) return null;
         return {

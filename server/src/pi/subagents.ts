@@ -4,6 +4,7 @@ import {
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
+  type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import type { StreamEvent, UsageSummary } from "@fastcar/shared";
 import type { Config } from "../config.js";
@@ -51,10 +52,11 @@ class Semaphore {
 }
 
 const SUBAGENT_TOOLS: Record<SubagentKind, string[]> = {
-  // maxcoding gets git except clone — repo registration stays with the conductor.
+  // maxcoding gets git except clone and purge — the repository registry's
+  // lifecycle stays with the conductor, which can ask the user about it.
   maxcoding: [
     "read", "bash", "edit", "write", "grep", "find", "ls", "web_search",
-    ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone"),
+    ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone" && n !== "git_purge"),
   ],
   minimodel: ["read", "grep", "find", "ls", "web_search", "git_status", "git_list_repos"],
 };
@@ -63,6 +65,41 @@ const SUBAGENT_PROMPTS: Record<SubagentKind, string> = {
   maxcoding: MAXCODING_PROMPT,
   minimodel: MINIMODEL_PROMPT,
 };
+
+/** Using one of these means the subagent changed something, so it must verify it. */
+const MUTATING_TOOLS = ["edit", "write", "bash"];
+
+const VERIFICATION_REMINDER = `Your report is missing the required "## Verification" section, and you changed things.
+
+Verify the work now: find how this project checks itself (package.json scripts, Makefile, pyproject, CI config), install anything missing, and run the relevant tests plus the build/typecheck. Fix what your change broke and run it again.
+
+Reply with the "## Verification" section only: each command verbatim, pass or fail, and the output that matters. If verification is genuinely impossible here, say so explicitly under that heading.`;
+
+/** Lenient on formatting — an unheaded "Verification:" line still counts. */
+function hasVerification(report: string): boolean {
+  return /^\s*(?:#{1,6}\s*|\*\*)?verification\b/im.test(report);
+}
+
+function lastAssistantReport(session: AgentSession): { text: string; usage: UsageSummary } {
+  const assistants = session.messages.filter((m) => (m as { role?: string }).role === "assistant");
+  const last = assistants[assistants.length - 1];
+  if (!last) return { text: "", usage: {} };
+  return {
+    text: extractText(last as { content?: unknown }),
+    usage: extractUsage(last as Parameters<typeof extractUsage>[0]) ?? {},
+  };
+}
+
+function mergeUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
+  const add = (x?: number, y?: number) =>
+    x == null && y == null ? undefined : (x ?? 0) + (y ?? 0);
+  return {
+    model: b.model ?? a.model,
+    inputTokens: add(a.inputTokens, b.inputTokens),
+    outputTokens: add(a.outputTokens, b.outputTokens),
+    cost: add(a.cost, b.cost),
+  };
+}
 
 export class SubagentManager {
   private semaphores: Record<SubagentKind, Semaphore>;
@@ -116,8 +153,12 @@ export class SubagentManager {
       settingsManager: SettingsManager.inMemory(),
     });
 
+    const toolsUsed = new Set<string>();
     const unsubscribe = session.subscribe((event) => {
-      for (const ev of translateSessionEvent(event)) onEvent(kind, taskId, ev);
+      for (const ev of translateSessionEvent(event)) {
+        if (ev.kind === "tool_start") toolsUsed.add(ev.name);
+        onEvent(kind, taskId, ev);
+      }
     });
     const onAbort = () => void session.abort();
     signal?.addEventListener("abort", onAbort);
@@ -126,14 +167,22 @@ export class SubagentManager {
       await session.prompt(`Task: ${task}`);
       if (signal?.aborted) throw new Error("subagent aborted");
 
-      const assistantMessages = session.messages.filter(
-        (m) => (m as { role?: string }).role === "assistant",
-      );
-      const last = assistantMessages[assistantMessages.length - 1];
-      const report = last ? extractText(last as { content?: unknown }) : "";
-      const usage = last
-        ? (extractUsage(last as Parameters<typeof extractUsage>[0]) ?? {})
-        : {};
+      let { text: report, usage } = lastAssistantReport(session);
+
+      // Enforce the verification contract rather than trusting the prompt: a
+      // coding agent that changed something and reported no verification gets
+      // exactly one follow-up turn to go and run the checks.
+      const changedSomething = MUTATING_TOOLS.some((t) => toolsUsed.has(t));
+      if (kind === "maxcoding" && changedSomething && !hasVerification(report)) {
+        await session.prompt(VERIFICATION_REMINDER);
+        if (signal?.aborted) throw new Error("subagent aborted");
+        const followUp = lastAssistantReport(session);
+        if (followUp.text) {
+          report = `${report}\n\n${followUp.text}`;
+          usage = mergeUsage(usage, followUp.usage);
+        }
+      }
+
       return { report: report || "(subagent produced no report)", usage };
     } finally {
       signal?.removeEventListener("abort", onAbort);

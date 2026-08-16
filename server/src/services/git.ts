@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { RepoStatus } from "@fastcar/shared";
 import type { Config } from "../config.js";
-import { getRepoByName, listRepos, registerRepo, type RepoRecord } from "../db/repos.js";
+import { deleteRepo, getRepoByName, listRepos, registerRepo, type RepoRecord } from "../db/repos.js";
 
 /** Emits "changed" whenever the set of repos (or their state) may have changed. */
 export const gitEvents = new EventEmitter();
@@ -136,6 +136,94 @@ export async function pushRepo(name: string, signal?: AbortSignal): Promise<stri
   return (stdout + stderr).trim() || `pushed ${branch}`;
 }
 
+// ---------------------------------------------------------------- purging
+
+/** Thrown when a repository still holds work that a purge would destroy. */
+export class PurgeRefusedError extends Error {
+  constructor(
+    readonly repoName: string,
+    readonly reasons: string[],
+  ) {
+    super(
+      `Refusing to purge "${repoName}": ${reasons.join("; ")}. Purge with force to delete it anyway.`,
+    );
+    this.name = "PurgeRefusedError";
+  }
+}
+
+export interface PurgeResult {
+  name: string;
+  path: string;
+  /** The registry entry was dropped but no files were deleted. */
+  registryOnly: boolean;
+}
+
+function isInside(root: string, target: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/** Work that would be lost with the clone — empty means the purge is safe. */
+async function unsavedWork(dir: string): Promise<string[]> {
+  const reasons: string[] = [];
+  try {
+    const porcelain = (await runGit(["status", "--porcelain"], dir)).stdout.trim();
+    if (porcelain) reasons.push(`${porcelain.split("\n").length} uncommitted change(s)`);
+  } catch {
+    // A checkout git cannot read is one we cannot clear — let force decide.
+    return ["its git state could not be read"];
+  }
+  try {
+    // Commits reachable from a local branch but from no remote-tracking branch.
+    // With no remote configured that is every commit, which is the honest answer.
+    const unpushed = (await runGit(["log", "--branches", "--not", "--remotes", "--oneline"], dir))
+      .stdout.trim();
+    if (unpushed) reasons.push(`${unpushed.split("\n").length} commit(s) on no remote`);
+  } catch {
+    // no branches yet
+  }
+  return reasons;
+}
+
+/**
+ * Deregister a repository and delete its clone.
+ *
+ * Refuses when the clone holds uncommitted changes or commits that exist on no
+ * remote, unless `force`. Files are only ever deleted from inside the managed
+ * repos directory: a repository registered from elsewhere is deregistered and
+ * left on disk.
+ */
+export async function purgeRepo(
+  cfg: Config,
+  name: string,
+  opts: { force?: boolean } = {},
+): Promise<PurgeResult> {
+  const repo = await getRepoByName(name);
+  if (!repo) {
+    const names = (await listRepos()).map((r) => r.name);
+    throw new Error(
+      `No registered repository named "${name}". Registered: ${names.join(", ") || "(none)"}`,
+    );
+  }
+
+  const managed = isInside(cfg.reposDir, repo.path);
+  const onDisk = fs.existsSync(repo.path);
+  let registryOnly = true;
+
+  if (onDisk && managed) {
+    if (!opts.force) {
+      const reasons = await unsavedWork(repo.path);
+      if (reasons.length) throw new PurgeRefusedError(name, reasons);
+    }
+    await fs.promises.rm(repo.path, { recursive: true, force: true });
+    registryOnly = false;
+  }
+
+  await deleteRepo(name);
+  gitEvents.emit("changed");
+  return { name, path: repo.path, registryOnly };
+}
+
 export async function repoStatusText(name: string): Promise<string> {
   const repo = await resolveRepo(name);
   const status = (await runGit(["status", "--short", "--branch"], repo.path)).stdout.trim();
@@ -157,6 +245,9 @@ export async function collectRepoStatuses(): Promise<RepoStatus[]> {
           await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repo.path)
         ).stdout.trim();
         const porcelain = (await runGit(["status", "--porcelain"], repo.path)).stdout;
+        const lastCommitAt =
+          (await runGit(["log", "-1", "--format=%cI"], repo.path).catch(() => ({ stdout: "" })))
+            .stdout.trim() || undefined;
         let ahead = 0;
         let behind = 0;
         try {
@@ -169,7 +260,15 @@ export async function collectRepoStatuses(): Promise<RepoStatus[]> {
         } catch {
           // no upstream configured
         }
-        return { ...base, branch, dirty: porcelain.trim().length > 0, ahead, behind, missing: false };
+        return {
+          ...base,
+          branch,
+          dirty: porcelain.trim().length > 0,
+          ahead,
+          behind,
+          missing: false,
+          lastCommitAt,
+        };
       } catch {
         return { ...base, branch: null, dirty: false, missing: false };
       }

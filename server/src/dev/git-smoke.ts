@@ -12,12 +12,15 @@ import { loadConfig } from "../config.js";
 import { migrate } from "../db/migrate.js";
 import { closePool } from "../db/pool.js";
 import { deleteRepo } from "../db/repos.js";
+import { getRepoByName } from "../db/repos.js";
 import {
   checkoutBranch,
   cloneRepo,
   collectRepoStatuses,
   commitRepo,
   pullRepo,
+  purgeRepo,
+  PurgeRefusedError,
   pushRepo,
   runGit,
 } from "../services/git.js";
@@ -67,12 +70,45 @@ try {
   const status = statuses.find((s) => s.name === repoName);
   assert(status?.branch === "main", "status reports current branch");
   assert(status?.dirty === false, "status reports clean tree");
+  assert(status?.lastCommitAt != null, "status reports the last commit date (repo age)");
+
+  // Purge refuses while the clone still holds work…
+  fs.writeFileSync(path.join(repo.path, "scratch.txt"), "unsaved\n");
+  let refused: unknown;
+  await purgeRepo(cfg, repoName).catch((err) => (refused = err));
+  assert(refused instanceof PurgeRefusedError, "purge refuses a repo with uncommitted changes");
+  assert(fs.existsSync(repo.path), "refused purge left the clone untouched");
+
+  await commitRepo(cfg, repoName, "smoke: scratch", true);
+  refused = undefined;
+  await purgeRepo(cfg, repoName).catch((err) => (refused = err));
+  assert(refused instanceof PurgeRefusedError, "purge refuses a repo with commits on no remote");
+
+  // …and goes through once the work is safe (or when forced).
+  await pushRepo(repoName);
+  const purged = await purgeRepo(cfg, repoName);
+  assert(purged.registryOnly === false, "purge deleted the clone");
+  assert(!fs.existsSync(repo.path), "clone directory is gone");
+  assert((await getRepoByName(repoName)) === null, "repository is deregistered");
+  assert(
+    !(await collectRepoStatuses()).some((s) => s.name === repoName),
+    "purged repo no longer appears in the repo panel data",
+  );
+
+  // Forcing works even with unsaved work in the tree.
+  const forcedName = `${repoName}-forced`;
+  const forced = await cloneRepo(cfg, bare, forcedName);
+  fs.writeFileSync(path.join(forced.path, "scratch.txt"), "unsaved\n");
+  await purgeRepo(cfg, forcedName, { force: true });
+  assert(!fs.existsSync(forced.path), "forced purge deletes a dirty clone");
 
   console.log("\nALL GIT SMOKE TESTS PASSED");
 } finally {
-  await deleteRepo(repoName).catch(() => {});
+  // Idempotent cleanup: the purge assertions above may already have run.
+  for (const name of [repoName, `${repoName}-forced`]) {
+    await deleteRepo(name).catch(() => {});
+    fs.rmSync(path.join(cfg.reposDir, name), { recursive: true, force: true });
+  }
   fs.rmSync(tmp, { recursive: true, force: true });
-  const clonePath = path.join(cfg.reposDir, repoName);
-  fs.rmSync(clonePath, { recursive: true, force: true });
   await closePool();
 }

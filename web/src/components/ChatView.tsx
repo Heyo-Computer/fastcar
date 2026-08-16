@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ThreadMeta } from "@fastcar/shared";
 import { useStore } from "../state/store.ts";
-import { AssistantBubble, ErrorBubble, UserBubble } from "./MessageBubble.tsx";
+import { AssistantBubble, ErrorBubble, SystemBubble, UserBubble } from "./MessageBubble.tsx";
 import { PlanApprovalCard } from "./PlanApprovalCard.tsx";
 import { QuestionCard } from "./QuestionCard.tsx";
 import { ToolCallCard } from "./ToolCallCard.tsx";
@@ -46,6 +46,8 @@ export function ChatView({ thread }: { thread: ThreadMeta }) {
           switch (item.type) {
             case "user":
               return <UserBubble key={item.key} item={item} />;
+            case "system":
+              return <SystemBubble key={item.key} item={item} />;
             case "assistant":
               return <AssistantBubble key={item.key} item={item} />;
             case "tool":

@@ -7,6 +7,7 @@ import {
   cloneRepo,
   commitRepo,
   pullRepo,
+  purgeRepo,
   pushRepo,
   repoStatusText,
 } from "../services/git.js";
@@ -112,6 +113,29 @@ export function createGitTools(cfg: Config) {
     },
   });
 
+  const purge = defineTool({
+    name: "git_purge",
+    label: "Purge Repository",
+    description:
+      "Delete a registered repository's clone from the VM and drop it from the registry — use it to reclaim space from repositories that are no longer needed. Refuses when the clone holds uncommitted changes or commits that exist on no remote; commit and push first, or tell the user to force the purge from the Repositories panel. This cannot be undone: confirm with the user (ask_user) before purging anything you were not explicitly asked to remove.",
+    parameters: Type.Object({ repo: REPO_PARAM }),
+    execute: async (_id, params) => {
+      // Never force from a tool call — destructive overrides stay with the user.
+      const result = await purgeRepo(cfg, params.repo);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.registryOnly
+              ? `Deregistered "${result.name}". Files at ${result.path} were left in place (outside the managed repos directory).`
+              : `Purged "${result.name}": deleted ${result.path} and removed it from the registry.`,
+          },
+        ],
+        details: { name: result.name, registryOnly: result.registryOnly },
+      };
+    },
+  });
+
   const list = defineTool({
     name: "git_list_repos",
     label: "List Repositories",
@@ -128,7 +152,7 @@ export function createGitTools(cfg: Config) {
     },
   });
 
-  return [clone, pull, checkout, commit, push, status, list];
+  return [clone, pull, checkout, commit, push, status, purge, list];
 }
 
 export const GIT_TOOL_NAMES = [
@@ -138,8 +162,16 @@ export const GIT_TOOL_NAMES = [
   "git_commit",
   "git_push",
   "git_status",
+  "git_purge",
   "git_list_repos",
 ];
 
 /** Git tools that mutate repository state (blocked in plan mode). */
-export const GIT_MUTATING_TOOLS = ["git_clone", "git_pull", "git_checkout", "git_commit", "git_push"];
+export const GIT_MUTATING_TOOLS = [
+  "git_clone",
+  "git_pull",
+  "git_checkout",
+  "git_commit",
+  "git_push",
+  "git_purge",
+];

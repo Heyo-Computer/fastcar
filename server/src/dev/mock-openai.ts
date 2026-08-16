@@ -6,8 +6,12 @@ import { getAgent } from "../pi/agentsConfig.js";
  * tools, real WS protocol, real UI) can run with no API keys. Responses are
  * scripted off the incoming conversation:
  *  - default: one `ls` tool call, then a final text message
- *  - prompt contains "ask"      -> ask_user tool call (if the tool is offered)
- *  - prompt contains "delegate" -> run_subagent(minimodel) call (if offered)
+ *  - prompt contains "ask"       -> ask_user tool call (if the tool is offered)
+ *  - prompt contains "delegate"  -> run_subagent(minimodel) call (if offered)
+ *  - prompt contains "implement" -> run_subagent(maxcoding) call (if offered)
+ *  - maxcoding subagent          -> a `bash` call and a report with no
+ *    verification, so the harness's verification follow-up fires; the reminder
+ *    is answered with a "## Verification" section
  *  - planning-mode system prompt -> submit_plan call (if offered)
  * Also implements POST .../audio/transcriptions with a canned transcript.
  */
@@ -53,6 +57,15 @@ function decideReply(req: ChatRequest): Reply {
   const userText = rawUserText.toLowerCase();
   const hadToolResult = req.messages.some((m) => m.role === "tool");
 
+  // The harness sends this back to a coding subagent that changed something and
+  // reported no verification. Answer it the way the contract requires.
+  if (userText.includes("missing the required")) {
+    return {
+      kind: "text",
+      text: "## Verification\n- `npm test` — passed (mock: 12 tests)\n- `npm run typecheck` — passed (mock)",
+    };
+  }
+
   // After any tool result, wrap up with text (keeps the loop short and predictable).
   if (lastMessage?.role === "tool") {
     return { kind: "text", text: "Mock run complete. I inspected the workspace and finished the task." };
@@ -80,6 +93,21 @@ function decideReply(req: ChatRequest): Reply {
       name: "run_subagent",
       args: { agent: getAgent("small_task"), task: "Summarize the contents of the current directory." },
     };
+  }
+  if (userText.includes("implement") && toolNames.has("run_subagent")) {
+    return {
+      kind: "tool",
+      name: "run_subagent",
+      args: {
+        agent: getAgent("coding"),
+        task: "Implement the requested change. Acceptance: the project's tests and typecheck pass. Verify with npm test and npm run typecheck.",
+      },
+    };
+  }
+  // The coding subagent changes something first — that is what makes the
+  // harness require verification before it accepts the report.
+  if (systemText.includes("senior software engineer") && toolNames.has("bash")) {
+    return { kind: "tool", name: "bash", args: { command: "echo mock edit applied" } };
   }
   if (userText.includes("remember") && toolNames.has("memory_save")) {
     return {

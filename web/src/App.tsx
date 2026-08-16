@@ -16,9 +16,12 @@ export default function App() {
   const selectedId = useStore((s) => s.selectedId);
   const thread = useStore((s) => s.threads.find((t) => t.id === s.selectedId));
 
+  const loadCommands = useStore((s) => s.loadCommands);
+
   useEffect(() => {
     connect();
-  }, []);
+    void loadCommands();
+  }, [loadCommands]);
 
   return (
     <div className="flex h-full">

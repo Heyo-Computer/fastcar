@@ -7,7 +7,13 @@
  *   npm run smoke:ws
  */
 import WebSocket from "ws";
-import type { ClientMessage, ServerMessage, ThreadHistoryResponse } from "@fastcar/shared";
+import type {
+  ClientMessage,
+  CommandsResponse,
+  MentionsResponse,
+  ServerMessage,
+  ThreadHistoryResponse,
+} from "@fastcar/shared";
 
 const BASE = process.env.FASTCAR_URL ?? "http://localhost:3000";
 const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws`);
@@ -97,7 +103,73 @@ ws.on("open", () => {
     await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
     assert(true, "delegation completed");
 
-    // 5. add repo via the agent (mock emits git_clone with the URL from the prompt)
+    // 5. slash commands and @-mention sources
+    const commands = (
+      (await (await fetch(`${BASE}/api/commands`)).json()) as CommandsResponse
+    ).commands;
+    assert(
+      commands.some((c) => c.name === "help") && commands.some((c) => c.name === "compact"),
+      "GET /api/commands lists the registry",
+    );
+
+    const systemText = async (name: string, args?: string): Promise<string> => {
+      send({ type: "command", threadId, name, args });
+      const ev = await waitFor(
+        "event",
+        (m) => m.threadId === threadId && m.ev.kind === "system",
+      );
+      return ev.ev.kind === "system" ? ev.ev.text : "";
+    };
+
+    assert((await systemText("help")).includes("/compact"), "/help renders the command list");
+    assert(
+      (await systemText("nope")).includes("Unknown command"),
+      "unknown commands report themselves",
+    );
+    assert((await systemText("context")).includes("Context"), "/context reports session usage");
+    assert((await systemText("agents")).includes("maxcoding"), "/agents lists the subagents");
+
+    // Fired back to back on purpose: each WS frame is handled in its own async
+    // task, so the manager has to queue them per thread rather than interleave.
+    send({ type: "command", threadId, name: "plan" });
+    send({ type: "command", threadId, name: "act" });
+    await waitFor("status", (m) => m.threadId === threadId && m.mode === "plan");
+    await waitFor("status", (m) => m.threadId === threadId && m.mode === "act");
+    assert(true, "/plan and /act queue in order instead of racing");
+
+    const mentions = (
+      (await (await fetch(`${BASE}/api/mentions?q=maxc`)).json()) as MentionsResponse
+    ).items;
+    assert(
+      mentions.some((m) => m.kind === "agent" && m.value === "maxcoding"),
+      "GET /api/mentions resolves @maxc → the maxcoding subagent",
+    );
+
+    // 6. delegated coding work has to come back verified
+    send({ type: "prompt", threadId, text: "please implement the mock widget" });
+    await waitFor(
+      "event",
+      (m) => m.threadId === threadId && m.agent === "maxcoding" && m.ev.kind === "tool_start",
+      60_000,
+    );
+    await waitFor(
+      "event",
+      (m) =>
+        m.threadId === threadId &&
+        m.agent === "conductor" &&
+        m.ev.kind === "tool_end" &&
+        m.ev.result.includes("## Verification"),
+      90_000,
+    );
+    assert(true, "a coding subagent that skipped verification is sent back to run the checks");
+    await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
+
+    // 7. add repo via the agent (mock emits git_clone with the URL from the prompt)
+    const missingPurge = await fetch(`${BASE}/api/repos/definitely-not-a-repo`, {
+      method: "DELETE",
+    });
+    assert(missingPurge.status === 404, "purging an unknown repository is a 404");
+
     const bareRepo = process.env.FASTCAR_SMOKE_BARE_REPO;
     if (bareRepo) {
       const repoName = `wssmoke-${Date.now()}`;
@@ -115,16 +187,24 @@ ws.on("open", () => {
         reposJson.repos.some((r) => r.name === repoName),
         "GET /api/repos lists the new repository",
       );
+
+      // Purge it again over REST — this also keeps the suite from leaving
+      // clones behind on the dev box.
+      const purged = await fetch(`${BASE}/api/repos/${repoName}`, { method: "DELETE" });
+      assert(purged.ok, "DELETE /api/repos/:name purges a clean clone");
+      await waitFor("repos_updated", (m) => !m.repos.some((r) => r.name === repoName), 30_000);
+      assert(true, "purge broadcasts the updated repository list");
     } else {
       console.log("skip: add_repo flow (set FASTCAR_SMOKE_BARE_REPO to enable)");
     }
 
-    // 6. history replay
+    // 8. history replay
     const res = await fetch(`${BASE}/api/threads/${threadId}/events`);
     const history = (await res.json()) as ThreadHistoryResponse;
     assert(history.events.some((e) => e.kind === "user_message"), "history has user messages");
     assert(history.events.some((e) => e.kind === "tool_call"), "history has tool calls");
     assert(history.events.some((e) => e.kind === "assistant_text"), "history has assistant text");
+    assert(history.events.some((e) => e.kind === "system"), "history has slash command output");
     assert(
       history.events.some((e) => e.agent === "minimodel"),
       "history has subagent rows",

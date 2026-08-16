@@ -13,12 +13,17 @@ export function createRunSubagentTool(manager: SubagentManager, onEvent: Subagen
     name: "run_subagent",
     label: "Run Subagent",
     description:
-      "Delegate work to a subagent. agent=maxcoding: a heavyweight coding agent with full tool access — use for substantial implementation, refactoring, or debugging. agent=minimodel: a fast read-only research agent — use for exploration, lookups, and summaries. Provide either a single task or a tasks array to run several in parallel. Subagents cannot ask the user questions.",
+      "Delegate work to a subagent. agent=maxcoding: a heavyweight coding agent with full tool access and its own VM — use for all substantial implementation, refactoring, and debugging; it installs whatever it needs, runs the project's tests/build after changing code, and returns a '## Verification' section with the commands it ran. agent=minimodel: a fast read-only research agent — use for exploration, lookups, and summaries. Provide either a single task or a tasks array to run several in parallel. Subagents cannot ask the user questions, so state assumptions in the task.",
     parameters: Type.Object({
       agent: StringEnum(["maxcoding", "minimodel"], {
         description: "Which subagent to use",
       }),
-      task: Type.Optional(Type.String({ description: "A single, self-contained task prompt" })),
+      task: Type.Optional(
+        Type.String({
+          description:
+            "A single, self-contained task prompt. For maxcoding, state the goal, the acceptance criteria, and how to verify the result (which tests, build, or lint to run).",
+        }),
+      ),
       tasks: Type.Optional(
         Type.Array(Type.String(), {
           description: "Multiple self-contained tasks to run in parallel (max 8)",

@@ -29,6 +29,9 @@ export function registerWs(app: FastifyInstance, manager: ThreadManager): void {
             case "prompt":
               await manager.prompt(msg.threadId, msg.text);
               break;
+            case "command":
+              await manager.command(msg.threadId, msg.name, msg.args ?? "");
+              break;
             case "set_mode":
               await manager.setMode(msg.threadId, msg.mode);
               break;

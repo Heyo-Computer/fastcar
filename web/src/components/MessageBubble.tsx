@@ -35,6 +35,18 @@ export function AssistantBubble({ item }: { item: Extract<ChatItem, { type: "ass
   );
 }
 
+/** Output of a slash command: rendered like a note from the app, not the model. */
+export function SystemBubble({ item }: { item: Extract<ChatItem, { type: "system" }> }) {
+  return (
+    <div className="my-3 rounded-xl border border-border bg-panel-2/60 px-4 py-2.5">
+      <div className="mb-1 text-[0.68rem] uppercase tracking-wider text-ink-faint">fastcar</div>
+      <div className="text-[0.9rem] text-ink-dim">
+        <Markdown text={item.text} />
+      </div>
+    </div>
+  );
+}
+
 export function ErrorBubble({ item }: { item: Extract<ChatItem, { type: "error" }> }) {
   return (
     <div className="my-2 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">

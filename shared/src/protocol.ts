@@ -29,6 +29,8 @@ export type PendingInteraction =
 
 export type StreamEvent =
   | { kind: "user_message"; text: string }
+  /** Output of a slash command — the app talking, not the model. */
+  | { kind: "system"; text: string }
   | { kind: "message_start"; role: "assistant" }
   | { kind: "text_delta"; text: string }
   | { kind: "thinking_delta"; text: string }
@@ -62,6 +64,53 @@ export interface RepoStatus {
   ahead?: number;
   behind?: number;
   missing?: boolean;
+  /** ISO date of the last commit — how the UI tells old repos from fresh ones. */
+  lastCommitAt?: string;
+}
+
+/** Result of DELETE /api/repos/:name */
+export interface PurgeRepoResponse {
+  name: string;
+  path: string;
+  /** True when only the registry entry was dropped and no files were deleted. */
+  registryOnly: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Composer autocomplete: slash commands and @-mentions
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a slash command runs. Server commands are dispatched to the
+ * ThreadManager; client commands (there are few) are handled in the browser
+ * because they act on the UI rather than on a thread.
+ */
+export type CommandScope = "server" | "client";
+
+/** One entry in the composer's `/` menu. */
+export interface CommandSpec {
+  /** Name without the leading slash, e.g. "compact". */
+  name: string;
+  /** One-line description shown in the menu. */
+  summary: string;
+  /** Argument placeholder shown after the name, e.g. "[instructions]". */
+  argHint?: string;
+  scope: CommandScope;
+  /** Alternate names that resolve to this command (no leading slash). */
+  aliases?: string[];
+}
+
+export type MentionKind = "agent" | "repo" | "dir" | "file";
+
+/** One entry in the composer's `@` menu. */
+export interface MentionItem {
+  kind: MentionKind;
+  /** Text inserted after the "@", e.g. "myrepo/src/index.ts". */
+  value: string;
+  /** Primary label shown in the menu. */
+  label: string;
+  /** Secondary text: absolute path, branch, agent description. */
+  detail?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +119,8 @@ export interface RepoStatus {
 
 export type ClientMessage =
   | { type: "prompt"; threadId: string; text: string }
+  /** Run a server-scoped slash command against a thread. */
+  | { type: "command"; threadId: string; name: string; args?: string }
   | { type: "create_thread"; mode?: ThreadMode }
   | { type: "set_mode"; threadId: string; mode: ThreadMode }
   | { type: "answer_question"; threadId: string; questionId: string; answer: string }
@@ -113,6 +164,7 @@ export interface PersistedEvent {
   taskId: string | null;
   kind:
     | "user_message"
+    | "system"
     | "assistant_text"
     | "thinking"
     | "tool_call"
@@ -133,4 +185,14 @@ export interface ThreadHistoryResponse {
 
 export interface TranscribeResponse {
   text: string;
+}
+
+/** GET /api/commands */
+export interface CommandsResponse {
+  commands: CommandSpec[];
+}
+
+/** GET /api/mentions?q=…&limit=… */
+export interface MentionsResponse {
+  items: MentionItem[];
 }

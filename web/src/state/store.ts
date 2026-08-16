@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   AgentName,
+  CommandSpec,
   PendingInteraction,
   PersistedEvent,
   RepoStatus,
@@ -9,6 +10,7 @@ import type {
   ThreadMeta,
   UsageSummary,
 } from "@fastcar/shared";
+import { fetchCommands } from "../lib/suggestions.ts";
 
 // ---------------------------------------------------------------- chat items
 
@@ -23,6 +25,8 @@ export interface SubActivity {
 
 export type ChatItem =
   | { type: "user"; key: string; text: string }
+  /** Slash command output — the app talking, not the model. */
+  | { type: "system"; key: string; text: string }
   | {
       type: "assistant";
       key: string;
@@ -66,6 +70,8 @@ export interface AppState {
   chats: Record<string, ThreadChat>;
   pending: Record<string, PendingInteraction | null>;
   repos: RepoStatus[];
+  /** Slash commands the server offers, for the composer's `/` menu. */
+  commands: CommandSpec[];
   /** Thread the UI should auto-select when it is created by us. */
   awaitingCreatedThread: boolean;
 
@@ -74,6 +80,7 @@ export interface AppState {
   selectThread(id: string | null): void;
   loadHistory(id: string): Promise<void>;
   loadRepos(): Promise<void>;
+  loadCommands(): Promise<void>;
 }
 
 let keyCounter = 0;
@@ -147,6 +154,9 @@ function applyStreamEvent(
   switch (ev.kind) {
     case "user_message":
       items.push({ type: "user", key: nextKey(), text: ev.text });
+      break;
+    case "system":
+      items.push({ type: "system", key: nextKey(), text: ev.text });
       break;
     case "message_start":
       items.push({ type: "assistant", key: nextKey(), text: "", thinking: "", streaming: true });
@@ -271,6 +281,9 @@ function applyPersistedEvent(items: ChatItem[], row: PersistedEvent): void {
     case "user_message":
       items.push({ type: "user", key: nextKey(), text: String(payload.text ?? "") });
       break;
+    case "system":
+      items.push({ type: "system", key: nextKey(), text: String(payload.text ?? "") });
+      break;
     case "assistant_text":
       items.push({
         type: "assistant",
@@ -353,6 +366,7 @@ export const useStore = create<AppState>((set, get) => ({
   chats: {},
   pending: {},
   repos: [],
+  commands: [],
   awaitingCreatedThread: false,
 
   setConnection: (connection) => set({ connection }),
@@ -445,6 +459,10 @@ export const useStore = create<AppState>((set, get) => ({
     if (!res.ok) return;
     const data = (await res.json()) as { repos: RepoStatus[] };
     set({ repos: data.repos });
+  },
+
+  loadCommands: async () => {
+    set({ commands: await fetchCommands() });
   },
 
   loadHistory: async (id) => {

@@ -138,20 +138,54 @@ recurses forever.
 - **Tasks** are a chat message or an attached/dropped `.md` file (sent as the
   task specification). The 🎙️ button records a voice prompt and drops the
   transcript into the composer.
+- **Slash commands**: type `/` at the start of a message for the command menu
+  (↑↓ to move, ⏎/⇥ to pick, esc to dismiss). Commands never reach the model —
+  they render into the thread as app output: `/help`, `/context` (context
+  window, tokens, cost), `/compact [focus]`, `/repos`, `/purge [repo]`,
+  `/memories [query]`, `/agents`, `/tools`, `/plan`, `/act`, `/new [plan]`.
+  The registry in
+  `server/src/threads/commands.ts` is the single source of truth: the menu is
+  served from it over `GET /api/commands`, so it can never offer something the
+  server cannot run. Server commands need an idle thread.
+- **@ mentions**: type `@` anywhere for subagents, registered repositories, and
+  the files and directories inside them (fuzzy-matched, backed by
+  `GET /api/mentions`; the index comes from `git ls-files` and is cached).
+  The transcript keeps what you typed — the conductor additionally receives the
+  resolved absolute paths, and reads the files itself rather than having them
+  inlined.
 - **Planning mode**: the agent explores read-only (mutating tools are blocked
   per-call), may ask questions, then submits a plan. Approve to execute
   (thread flips to act mode); request changes to get a revision.
 - **Questions**: when the agent calls `ask_user`, the thread pauses until you
   answer in the question card.
 - **Subagents** appear nested inside the `run_subagent` tool card with live
-  activity; the conductor receives their final reports.
+  activity; the conductor receives their final reports. The conductor is told to
+  delegate by default: anything beyond a one-line code change goes to
+  **maxcoding**, unfamiliar-code exploration goes to **minimodel**, and
+  independent tasks go out in parallel.
+- **Verification** is enforced, not merely requested. maxcoding owns its VM and
+  installs whatever a task needs, then runs the project's tests/build/typecheck
+  and reports a `## Verification` section with the commands it ran. If it
+  changed something (`edit`/`write`/`bash`) and reported no such section, the
+  harness sends it back for exactly one follow-up turn to run the checks before
+  its report reaches the conductor (`server/src/pi/subagents.ts`).
 - **Repositories**: the sidebar's Repositories panel lists every repo
-  registered in the VM with live branch/dirty/ahead-behind status. "+" asks the
-  agent to `git_clone` a URL — the clone runs in a visible thread. Agents get
-  `git_clone` / `git_pull` / `git_checkout` / `git_commit` / `git_push` /
-  `git_status` / `git_list_repos`; auth uses whatever the VM has (ssh keys,
-  credential helper, or a token embedded in an https URL — prompts are
-  disabled so bad auth fails fast instead of hanging).
+  registered in the VM with live branch/dirty/ahead-behind status and the age of
+  its last commit. "+" asks the agent to `git_clone` a URL — the clone runs in a
+  visible thread. Agents get `git_clone` / `git_pull` / `git_checkout` /
+  `git_commit` / `git_push` / `git_status` / `git_purge` / `git_list_repos`;
+  auth uses whatever the VM has (ssh keys, credential helper, or a token
+  embedded in an https URL — prompts are disabled so bad auth fails fast instead
+  of hanging).
+- **Purging old repos**: hover a repo for `×` (confirm, then delete), or use
+  `/purge` — with no argument it lists repositories oldest-commit-first so stale
+  clones are easy to spot, and `/purge <name>` removes one. A purge deletes the
+  clone and deregisters it, and is **refused** while the clone holds
+  uncommitted changes or commits that exist on no remote; the refusal names what
+  is in the way and offers `--force` (the panel offers "Purge anyway"). Files are
+  only ever deleted from inside `FASTCAR_REPOS_DIR` — a repository registered
+  from elsewhere is deregistered and left on disk. The agent's `git_purge` tool
+  never forces, so unsaved work can only be destroyed by you.
 - **Memories** are saved to Postgres by the agent (`memory_save` etc.) and
   injected into its system prompt on new sessions.
 - While the agent is running, sending a message **steers** it; ◼ Stop aborts
