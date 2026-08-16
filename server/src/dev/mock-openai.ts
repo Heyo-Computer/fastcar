@@ -1,4 +1,5 @@
 import http from "node:http";
+import { getAgent } from "../pi/agentsConfig.js";
 
 /**
  * Minimal OpenAI-compatible mock server so the full stack (real Pi loop, real
@@ -77,7 +78,7 @@ function decideReply(req: ChatRequest): Reply {
     return {
       kind: "tool",
       name: "run_subagent",
-      args: { agent: "minimodel", task: "Summarize the contents of the current directory." },
+      args: { agent: getAgent("small_task"), task: "Summarize the contents of the current directory." },
     };
   }
   if (userText.includes("remember") && toolNames.has("memory_save")) {

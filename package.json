@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "dependencies": {
+    "yaml": "^2.9.0"
+  },
   "workspaces": [
     "shared",
     "server",
@@ -10,6 +13,7 @@
   ],
   "//scripts": "These delegate by cd-ing into the workspace rather than with npm's --workspace flag: bun rewrites `npm run` to `bun run` and then ignores --workspace, which re-runs the identically-named ROOT script and recurses forever. `cd <dir> && npm run <script>` resolves against the workspace's own package.json under every package manager.",
   "scripts": {
+    "validate-agents": "node -e \"const fs=require('fs'); const content=fs.readFileSync('agents.yaml','utf8'); if(content.includes('agents:')) console.log('agents.yaml valid'); else console.warn('agents.yaml missing agents key');\"",
     "dev": "cd server && npm run dev",
     "dev:web": "cd web && npm run dev",
     "build": "(cd shared && npm run build) && (cd web && npm run build) && (cd server && npm run build)",

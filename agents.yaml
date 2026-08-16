@@ -1,0 +1,11 @@
+# agents.yaml configuration for Fastcar
+agents:
+  coding:
+    name: maxcoding
+    description: Heavy‑weight coding agent for implementation, refactors, debugging.
+  small_task:
+    name: minimodel
+    description: Fast, cheap read‑only agent for research, look‑ups, summarisation.
+  general:
+    name: maxcoding
+    description: Default agent when no specific role is required.
