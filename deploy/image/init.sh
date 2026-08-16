@@ -89,38 +89,79 @@ chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null
 chmod 644 /etc/ssh/ssh_host_*_key.pub 2>/dev/null
 /usr/sbin/sshd -D -e 2>/tmp/sshd.log &
 
-# --- Postgres -------------------------------------------------------------
+# --- Postgres (backgrounded — must NOT delay HEYVM_READY) -----------------
 #
 # Started here (not in start.sh) so the DB is up regardless of how the app is
 # launched, with its data dir on the data disk. If the deployment's
 # DATABASE_URL points at an external server instead, this local instance just
 # idles — harmless. Refuses to run without a mounted /workspace: a cluster on
 # the rootfs would pass every check and lose all data on the next cold boot.
+#
+# Backgrounded, and that is the load-bearing part. heyvmd's create call blocks
+# on the HEYVM_READY marker below and app-lb's SDK client allows the whole call
+# 30s — rootfs copy, boot and init included. First-boot provisioning here
+# (initdb, then pg_ctl start, then a pg_isready poll that can burn 30s by
+# itself) ran *before* the marker and blew that budget on its own, so every
+# create timed out, no VM ever joined the pool, and app-lb reported a transport
+# error with no boot failure to point at. Each retry got a fresh sandbox id and
+# therefore a fresh empty data disk, so it was first-boot every time — the
+# deployment could never converge.
+#
+# Output goes to a log, never the console: anything printed after HEYVM_READY
+# that is not part of a marked command corrupts the host's serial protocol.
+# The subshell touches /run/pg-ready last; start.sh waits on that (and only
+# when DATABASE_URL actually names this instance). /run is on the rootfs, which
+# is recopied from the base image every cold boot, so the flag cannot be stale.
 if [ "$DATA_READY" = "1" ]; then
-    PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1)
-    PGDATA=/workspace/pgdata
-    if [ -n "$PGBIN" ]; then
-        mkdir -p "$PGDATA" && chown -R postgres:postgres "$PGDATA" /workspace/log
-        if [ ! -f "$PGDATA/PG_VERSION" ]; then
-            echo "init: initdb (first boot)"
-            su postgres -s /bin/sh -c "$PGBIN/initdb -D $PGDATA --auth=md5 --auth-local=trust --username=postgres" \
-                >/workspace/log/initdb.log 2>&1
+    (
+        PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1)
+        PGDATA=/workspace/pgdata
+        if [ -n "$PGBIN" ]; then
+            mkdir -p "$PGDATA" && chown -R postgres:postgres "$PGDATA" /workspace/log
+            if [ ! -f "$PGDATA/PG_VERSION" ]; then
+                echo "initdb (first boot)"
+                su postgres -s /bin/sh -c "$PGBIN/initdb -D $PGDATA --auth=md5 --auth-local=trust --username=postgres"
+            fi
+            # /run is recreated on every cold boot, so the socket directory the
+            # Debian package ships is not there any more by the time we start.
+            mkdir -p /run/postgresql && chown postgres:postgres /run/postgresql
+            su postgres -s /bin/sh -c "$PGBIN/pg_ctl -D $PGDATA -l /workspace/log/postgres.log -o '-c listen_addresses=127.0.0.1' start"
+            # First boot: the fastcar role/database the default DATABASE_URL names.
+            #
+            # Over the unix socket, never `-h 127.0.0.1`. initdb above sets
+            # `--auth-local=trust` but `--auth=md5`, so a TCP connection as
+            # postgres demands a password that is never set — this step used to
+            # die with `fe_sendauth: no password supplied`, so the role and
+            # database were never created and the app failed its first connect
+            # with `password authentication failed for user "fastcar"`. The
+            # socket is the trusted path; the app still reaches Postgres over
+            # TCP, which is what the md5 line is for.
+            if [ ! -f "$PGDATA/.fastcar-provisioned" ]; then
+                for i in $(seq 1 60); do
+                    su postgres -s /bin/sh -c "$PGBIN/pg_isready" >/dev/null 2>&1 && break
+                    sleep 1
+                done
+                # Idempotent: a partially-provisioned cluster (role created, then
+                # the database step failed) must not wedge every later boot on a
+                # "role already exists" error. CREATE DATABASE cannot run inside
+                # a DO block, hence \gexec for that half.
+                su postgres -s /bin/sh -c "$PGBIN/psql -v ON_ERROR_STOP=1 -d postgres" <<'SQL' \
+                    && touch "$PGDATA/.fastcar-provisioned"
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'fastcar') THEN
+    CREATE ROLE fastcar LOGIN PASSWORD 'fastcar';
+  END IF;
+END $$;
+SELECT 'CREATE DATABASE fastcar OWNER fastcar'
+  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fastcar')\gexec
+SQL
+            fi
+            # Only now is the cluster both up and provisioned.
+            touch /run/pg-ready
+        else
+            echo "postgresql binaries not found"
         fi
-        su postgres -s /bin/sh -c "$PGBIN/pg_ctl -D $PGDATA -l /workspace/log/postgres.log -o '-c listen_addresses=127.0.0.1' start" \
-            >/workspace/log/pgctl.log 2>&1
-        # First boot: the fastcar role/database the default DATABASE_URL names.
-        if [ ! -f "$PGDATA/.fastcar-provisioned" ]; then
-            for i in $(seq 1 30); do
-                su postgres -s /bin/sh -c "$PGBIN/pg_isready -h 127.0.0.1" >/dev/null 2>&1 && break
-                sleep 1
-            done
-            su postgres -s /bin/sh -c "$PGBIN/psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -c \"CREATE ROLE fastcar LOGIN PASSWORD 'fastcar'\" -c 'CREATE DATABASE fastcar OWNER fastcar'" \
-                >/workspace/log/provision.log 2>&1 \
-                && touch "$PGDATA/.fastcar-provisioned"
-        fi
-    else
-        echo "init: postgresql binaries not found"
-    fi
+    ) >/workspace/log/pg-bringup.log 2>&1 &
 else
     echo "init: refusing to start postgres without a mounted /workspace;" \
          "its data would land on the rootfs and vanish on the next cold boot"

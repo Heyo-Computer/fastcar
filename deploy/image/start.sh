@@ -28,14 +28,22 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     exit 0
 fi
 
-# If DATABASE_URL points at the local instance init.sh started, wait for it.
+# If DATABASE_URL points at the local instance, wait for init.sh's *backgrounded*
+# bring-up to finish. Waiting here rather than in init.sh is deliberate: init.sh
+# runs inside heyvmd's create call, which app-lb gives 30s, while this script
+# runs after the VM is ready and only has to beat boot_timeout_secs (300s).
+#
+# The flag, not pg_isready: the cluster accepts connections a moment before the
+# fastcar role and database exist, and migrate() would race in through that gap
+# and fail on a database that is not there yet. init.sh touches /run/pg-ready
+# only after provisioning, so this waits for the condition we actually need.
 case "$DATABASE_URL" in
     *127.0.0.1*|*localhost*)
-        PGBIN=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | head -1)
-        for i in $(seq 1 30); do
-            [ -n "$PGBIN" ] && su postgres -s /bin/sh -c "$PGBIN/pg_isready -h 127.0.0.1" >/dev/null 2>&1 && break
+        for i in $(seq 1 120); do
+            [ -f /run/pg-ready ] && break
             sleep 1
         done
+        [ -f /run/pg-ready ] || echo "warning: local postgres not ready after 120s; see /workspace/log/pg-bringup.log"
         ;;
 esac
 

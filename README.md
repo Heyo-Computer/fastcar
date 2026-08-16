@@ -103,8 +103,14 @@ included.
 npm run smoke -- "hello, look around"     # CLI conductor session (mock)
 npm run smoke:ws                          # full WS protocol suite against a running server
                                           # (FASTCAR_SMOKE_BARE_REPO=<path> also tests add-repo)
-npm run smoke:git --workspace=@fastcar/server   # git clone/branch/commit/push round-trip
+npm run smoke:git                         # git clone/branch/commit/push round-trip
 ```
+
+Every script above also runs under `bun` (`bun dev`, `bun run build`, …). The
+root scripts delegate with `cd <workspace> && npm run <script>` rather than
+npm's `--workspace` flag, because bun rewrites `npm run` to `bun run` and then
+ignores `--workspace` — which re-runs the root script of the same name and
+recurses forever.
 
 ## Environment variables
 

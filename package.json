@@ -8,15 +8,17 @@
     "server",
     "web"
   ],
+  "//scripts": "These delegate by cd-ing into the workspace rather than with npm's --workspace flag: bun rewrites `npm run` to `bun run` and then ignores --workspace, which re-runs the identically-named ROOT script and recurses forever. `cd <dir> && npm run <script>` resolves against the workspace's own package.json under every package manager.",
   "scripts": {
-    "dev": "npm run dev --workspace=@fastcar/server",
-    "dev:web": "npm run dev --workspace=@fastcar/web",
-    "build": "npm run build --workspace=@fastcar/shared && npm run build --workspace=@fastcar/web && npm run build --workspace=@fastcar/server",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "migrate": "npm run migrate --workspace=@fastcar/server",
-    "smoke": "npm run smoke --workspace=@fastcar/server",
-    "smoke:ws": "npm run smoke:ws --workspace=@fastcar/server",
-    "start": "npm run start --workspace=@fastcar/server"
+    "dev": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev",
+    "build": "(cd shared && npm run build) && (cd web && npm run build) && (cd server && npm run build)",
+    "typecheck": "(cd shared && npm run typecheck) && (cd server && npm run typecheck) && (cd web && npm run typecheck)",
+    "migrate": "cd server && npm run migrate",
+    "smoke": "cd server && npm run smoke",
+    "smoke:ws": "cd server && npm run smoke:ws",
+    "smoke:git": "cd server && npm run smoke:git",
+    "start": "cd server && npm run start"
   },
   "engines": {
     "node": ">=22.19.0"
