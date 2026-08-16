@@ -8,20 +8,29 @@ export function RepoPanel() {
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
+  const [token, setToken] = useState("");
 
   const submit = () => {
-    const trimmed = url.trim();
-    if (!trimmed) return;
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) return;
+    // If a token is provided, embed it into the HTTPS URL for private repo access.
+    let finalUrl = trimmedUrl;
+    const trimmedToken = token.trim();
+    if (trimmedToken && finalUrl.startsWith("https://")) {
+      // Insert token as username: https://<token>@github.com/...
+      finalUrl = "https://" + trimmedToken + "@" + finalUrl.slice(8);
+    }
     // Routed through the conductor: it clones with git_clone in a visible thread.
     useStore.setState({ awaitingCreatedThread: true });
     send({
       type: "add_repo",
-      url: trimmed,
+      url: finalUrl,
       name: name.trim() || undefined,
       threadId: selectedId ?? undefined,
     });
     setUrl("");
     setName("");
+    setToken("");
     setAdding(false);
   };
 
@@ -61,6 +70,12 @@ export function RepoPanel() {
               onChange={(e) => setName(e.target.value)}
               placeholder="name (optional)"
               className="min-w-0 flex-1 rounded-lg border border-border bg-panel-2 px-2.5 py-1.5 text-[0.78rem] text-ink outline-none focus:border-accent/60"
+            />
+            <input
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="GitHub token (optional)"
+              className="w-full rounded-lg border border-border bg-panel-2 px-2.5 py-1.5 text-[0.78rem] text-ink outline-none focus:border-accent/60 mt-1"
             />
             <button
               type="submit"
