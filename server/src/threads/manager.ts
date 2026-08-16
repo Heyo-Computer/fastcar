@@ -134,7 +134,7 @@ export class ThreadManager {
     // Handle slash commands locally before delegating to the conductor.
     if (text.startsWith("/")) {
       const parts = text.trim().split(/\s+/);
-      const cmd = parts[0].toLowerCase();
+      const cmd = parts[0]?.toLowerCase() ?? "";
       const args = parts.slice(1);
       switch (cmd) {
         case "/compaction": {
