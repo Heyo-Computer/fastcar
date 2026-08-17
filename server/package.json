@@ -14,18 +14,20 @@
     "smoke:git": "tsx src/dev/git-smoke.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1",
-    "@earendil-works/pi-ai": "0.84.1",
     "@earendil-works/pi-agent-core": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
     "@fastcar/shared": "*",
     "@fastify/multipart": "^9.2.1",
     "@fastify/static": "^8.3.0",
     "@fastify/websocket": "^11.2.0",
     "fastify": "^5.6.2",
+    "markdown-it": "^15.0.0",
     "pg": "^8.16.3",
     "typebox": "1.3.7"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.3.0",
     "@types/pg": "^8.15.5",
     "@types/ws": "^8.18.1",

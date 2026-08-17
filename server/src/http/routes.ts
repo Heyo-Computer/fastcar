@@ -11,8 +11,12 @@ import { collectRepoStatuses, purgeRepo, PurgeRefusedError } from "../services/g
 import { searchMentions } from "../services/mentions.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { COMMAND_SPECS } from "../threads/commands.js";
+import { artifactsRoutes } from "./artifacts.js";
 
 export function registerRoutes(app: FastifyInstance, cfg: Config): void {
+  // Rendered Markdown documentation under artifacts/docs.
+  void app.register(artifactsRoutes);
+
   app.get("/api/health", async () => ({ ok: true, mock: cfg.mock }));
 
   app.get("/api/threads", async () => {
