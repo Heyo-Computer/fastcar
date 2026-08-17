@@ -25,6 +25,8 @@ export interface CommandContext {
   /** The thread's conductor session, or null if it has not been created yet. */
   session: AgentSession | null;
   setMode: (mode: ThreadMode) => Promise<void>;
+  /** Rename this thread; resolves with the cleaned-up title. */
+  rename: (title: string) => Promise<string>;
 }
 
 interface CommandDef extends CommandSpec {
@@ -238,6 +240,17 @@ const COMMANDS: CommandDef[] = [
       const names = session.getActiveToolNames();
       if (!names.length) return "The conductor has no active tools.";
       return `### Tools (${names.length})\n${names.map((n) => `\`${n}\``).join(" · ")}`;
+    },
+  },
+  {
+    name: "rename",
+    summary: "Rename this thread",
+    argHint: "<title>",
+    scope: "server",
+    aliases: ["title"],
+    run: async ({ args, rename }) => {
+      if (!args) return "Give the thread a name: `/rename Refactor the parser`.";
+      return `Thread renamed to **${await rename(args)}**.`;
     },
   },
   {

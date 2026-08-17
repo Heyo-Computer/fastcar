@@ -392,6 +392,21 @@ export const useStore = create<AppState>((set, get) => ({
         set(patch);
         break;
       }
+      case "thread_deleted": {
+        const threads = state.threads.filter((t) => t.id !== msg.threadId);
+        const chats = { ...state.chats };
+        const pending = { ...state.pending };
+        delete chats[msg.threadId];
+        delete pending[msg.threadId];
+        // Deleting the open thread falls through to the next most recent one.
+        const selectedId =
+          state.selectedId === msg.threadId ? (threads[0]?.id ?? null) : state.selectedId;
+        set({ threads, chats, pending, selectedId });
+        if (selectedId && selectedId !== state.selectedId && !chats[selectedId]?.loaded) {
+          void get().loadHistory(selectedId);
+        }
+        break;
+      }
       case "thread_updated": {
         const threads = state.threads.map((t) => (t.id === msg.thread.id ? msg.thread : t));
         if (!threads.some((t) => t.id === msg.thread.id)) threads.unshift(msg.thread);

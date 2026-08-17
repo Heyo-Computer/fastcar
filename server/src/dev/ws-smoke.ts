@@ -164,7 +164,53 @@ ws.on("open", () => {
     assert(true, "a coding subagent that skipped verification is sent back to run the checks");
     await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
 
-    // 7. add repo via the agent (mock emits git_clone with the URL from the prompt)
+    // 7. rename and delete threads
+    send({ type: "rename_thread", threadId, title: "  Renamed   by  smoke  " });
+    const renamed = await waitFor(
+      "thread_updated",
+      (m) => m.thread.id === threadId && m.thread.title === "Renamed by smoke",
+    );
+    assert(renamed.thread.title === "Renamed by smoke", "rename normalizes and applies the title");
+
+    assert(
+      (await systemText("rename", "Renamed by command")).includes("Renamed by command"),
+      "/rename renames the thread",
+    );
+
+    send({ type: "create_thread" });
+    const doomed = (await waitFor("thread_created", (m) => m.thread.title === "New thread")).thread
+      .id;
+    send({ type: "prompt", threadId: doomed, text: "hello, look around" });
+    await waitFor("status", (m) => m.threadId === doomed && m.status === "idle", 60_000);
+    send({ type: "delete_thread", threadId: doomed });
+    await waitFor("thread_deleted", (m) => m.threadId === doomed);
+    const afterDelete = (await (await fetch(`${BASE}/api/threads`)).json()) as {
+      threads: Array<{ id: string }>;
+    };
+    assert(
+      !afterDelete.threads.some((t) => t.id === doomed),
+      "deleted thread is gone from GET /api/threads",
+    );
+    assert(
+      (await fetch(`${BASE}/api/threads/${doomed}/events`)).status === 404,
+      "deleted thread's history is gone too",
+    );
+
+    // Deleting mid-run: the run must unwind without writing events for a row
+    // that is on its way out (this raced the events foreign key once).
+    send({ type: "create_thread" });
+    const midRun = (await waitFor("thread_created", (m) => m.thread.title === "New thread")).thread
+      .id;
+    send({ type: "prompt", threadId: midRun, text: "hello, look around" });
+    await waitFor("status", (m) => m.threadId === midRun && m.status === "running");
+    send({ type: "delete_thread", threadId: midRun });
+    await waitFor("thread_deleted", (m) => m.threadId === midRun);
+    assert(
+      (await fetch(`${BASE}/api/threads/${midRun}/events`)).status === 404,
+      "a thread deleted mid-run is removed cleanly",
+    );
+
+    // 8. add repo via the agent (mock emits git_clone with the URL from the prompt)
     const missingPurge = await fetch(`${BASE}/api/repos/definitely-not-a-repo`, {
       method: "DELETE",
     });
@@ -198,7 +244,7 @@ ws.on("open", () => {
       console.log("skip: add_repo flow (set FASTCAR_SMOKE_BARE_REPO to enable)");
     }
 
-    // 8. history replay
+    // 9. history replay
     const res = await fetch(`${BASE}/api/threads/${threadId}/events`);
     const history = (await res.json()) as ThreadHistoryResponse;
     assert(history.events.some((e) => e.kind === "user_message"), "history has user messages");

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type {
   AgentName,
   PendingInteraction,
@@ -36,6 +38,8 @@ interface ThreadRuntime {
   seq: number;
   /** Complete items staged for the PG flush at agent_end. */
   staged: EventInsert[];
+  /** In-flight event insert, if any — deletion waits for it to land. */
+  flushing: Promise<void> | null;
   pendingQuestion: PendingQuestion | null;
   /** Serializes state-changing work on this thread; see `enqueue`. */
   queue: Promise<unknown>;
@@ -43,6 +47,8 @@ interface ThreadRuntime {
   /** Rolling text of the current assistant message, for title + plan fallback. */
   lastAssistantText: string;
   creating: Promise<ConductorHandle> | null;
+  /** The thread is gone: a run still unwinding must not write or broadcast. */
+  deleted: boolean;
 }
 
 const DELTA_COALESCE_MS = 30;
@@ -116,6 +122,65 @@ export class ThreadManager {
     const meta = toMeta(rec);
     this.broadcast({ type: "thread_created", thread: meta });
     return meta;
+  }
+
+  async renameThread(threadId: string, title: string): Promise<void> {
+    await this.applyTitle(this.runtimes.get(threadId) ?? null, threadId, title);
+  }
+
+  private async applyTitle(
+    rt: ThreadRuntime | null,
+    threadId: string,
+    title: string,
+  ): Promise<string> {
+    const clean = title.trim().replace(/\s+/g, " ").slice(0, 200);
+    if (!clean) throw new Error("a thread title cannot be empty");
+    const rec = await threadsDb.updateThread(threadId, { title: clean });
+    if (!rec) throw new Error(`no such thread: ${threadId}`);
+    // Keep the runtime in step so auto-titling never overwrites a chosen name.
+    if (rt) rt.title = clean;
+    this.broadcast({ type: "thread_updated", thread: toMeta(rec) });
+    return clean;
+  }
+
+  /**
+   * Delete a thread outright: stop any run, drop the agent session and its
+   * JSONL file, and remove the row (events cascade). Not recoverable.
+   */
+  async deleteThread(threadId: string): Promise<void> {
+    const rec = await threadsDb.getThread(threadId);
+    if (!rec) throw new Error(`no such thread: ${threadId}`);
+
+    const rt = this.runtimes.get(threadId);
+    if (rt) {
+      // Set first: an in-flight run unwinds through finishRun, which must not
+      // insert events for a row that is about to disappear.
+      rt.deleted = true;
+      rt.staged = [];
+      rt.pendingQuestion?.reject(new Error("thread deleted"));
+      rt.pendingQuestion = null;
+      await rt.conductor?.session.abort().catch(() => {});
+      rt.conductor?.session.dispose();
+      // An event insert already on its way to PG must land before the row goes,
+      // or it fails the foreign key on a thread that no longer exists.
+      await rt.flushing;
+      this.runtimes.delete(threadId);
+    }
+
+    await threadsDb.deleteThread(threadId);
+    this.removeSessionFile(rec.piSessionFile);
+    this.broadcast({ type: "thread_deleted", threadId });
+  }
+
+  /** Only ever unlinks inside the app's own session directory. */
+  private removeSessionFile(file: string | null): void {
+    if (!file) return;
+    const abs = path.resolve(file);
+    const rel = path.relative(path.resolve(this.cfg.sessionDir), abs);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return;
+    void fs.promises.rm(abs, { force: true }).catch((err) => {
+      console.error(`failed to remove session file ${abs}:`, err);
+    });
   }
 
   async setMode(threadId: string, mode: ThreadMode): Promise<void> {
@@ -207,6 +272,7 @@ export class ThreadManager {
           await this.applyMode(rt, mode, false);
           modeChanged = true;
         },
+        rename: (title) => this.applyTitle(rt, rt.id, title),
       });
       this.stageAndSend(rt, "conductor", undefined, { kind: "system", text: output });
     } catch (err) {
@@ -232,6 +298,7 @@ export class ThreadManager {
   private async finishRun(rt: ThreadRuntime): Promise<void> {
     this.flushDeltas();
     await this.flushStaged(rt);
+    if (rt.deleted) return;
 
     if (rt.mode === "plan" && (rt.submittedPlan !== null || this.looksLikePlan(rt))) {
       const plan = rt.submittedPlan ?? rt.lastAssistantText;
@@ -365,11 +432,13 @@ export class ThreadManager {
       conductor: null,
       seq: await maxSeq(threadId),
       staged: [],
+      flushing: null,
       pendingQuestion: null,
       queue: Promise.resolve(),
       submittedPlan: null,
       lastAssistantText: "",
       creating: null,
+      deleted: false,
     };
     this.runtimes.set(threadId, rt);
     return rt;
@@ -472,6 +541,7 @@ export class ThreadManager {
     ev: StreamEvent,
     opts: { persist?: boolean } = {},
   ): void {
+    if (rt.deleted) return;
     const persist = opts.persist ?? true;
 
     if (ev.kind === "text_delta" || ev.kind === "thinking_delta") {
@@ -536,14 +606,15 @@ export class ThreadManager {
   }
 
   private async flushStaged(rt: ThreadRuntime): Promise<void> {
-    if (!rt.staged.length) return;
+    if (rt.deleted || !rt.staged.length) return;
     const batch = rt.staged;
     rt.staged = [];
-    try {
-      await insertEvents(batch);
-    } catch (err) {
+    const write = insertEvents(batch).catch((err) => {
       console.error(`failed to persist events for thread ${rt.id}:`, err);
-    }
+    });
+    rt.flushing = write;
+    await write;
+    if (rt.flushing === write) rt.flushing = null;
   }
 
   // Delta coalescing: buffer per (thread, agent, task, kind), flush every ~30ms.
@@ -585,13 +656,14 @@ export class ThreadManager {
   // ---------------------------------------------------------------- misc
 
   private async emitStatus(rt: ThreadRuntime): Promise<void> {
+    if (rt.deleted) return;
     this.broadcast({ type: "status", threadId: rt.id, status: rt.status, mode: rt.mode });
     const rec = await threadsDb.getThread(rt.id);
     if (rec) this.broadcast({ type: "thread_updated", thread: toMeta(rec) });
   }
 
   private async maybeAutoTitle(rt: ThreadRuntime): Promise<void> {
-    if (rt.title !== "New thread") return;
+    if (rt.deleted || rt.title !== "New thread") return;
     const text = rt.lastAssistantText.trim();
     if (!text) return;
     const title = text.replace(/[#*`>\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);

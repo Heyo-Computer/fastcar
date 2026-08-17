@@ -88,6 +88,12 @@ export async function updateThread(
   return rows[0] ? toRecord(rows[0]) : null;
 }
 
+/** Hard-delete a thread; its events cascade (see 001_init.sql). */
+export async function deleteThread(id: string): Promise<boolean> {
+  const { rowCount } = await getPool().query("DELETE FROM threads WHERE id = $1", [id]);
+  return (rowCount ?? 0) > 0;
+}
+
 /** Reset threads left in transient states by a previous server process. */
 export async function resetTransientStatuses(): Promise<void> {
   await getPool().query(

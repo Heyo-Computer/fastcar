@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ThreadMeta } from "@fastcar/shared";
 import { useStore } from "../state/store.ts";
 import { send } from "../lib/ws.ts";
@@ -27,6 +28,24 @@ export function Sidebar() {
   const selectedId = useStore((s) => s.selectedId);
   const selectThread = useStore((s) => s.selectThread);
   const connection = useStore((s) => s.connection);
+  /** Thread being renamed inline, and the draft title. */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  /** Thread awaiting delete confirmation. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const startRename = (t: ThreadMeta) => {
+    setConfirming(null);
+    setDraft(t.title);
+    setRenaming(t.id);
+  };
+
+  /** Enter or clicking away saves; Escape is the explicit cancel. */
+  const commitRename = (t: ThreadMeta) => {
+    const title = draft.trim();
+    if (title && title !== t.title) send({ type: "rename_thread", threadId: t.id, title });
+    setRenaming(null);
+  };
 
   const groups: Array<{ label: string; threads: ThreadMeta[] }> = [];
   for (const t of threads) {
@@ -77,21 +96,87 @@ export function Sidebar() {
               {g.label}
             </div>
             {g.threads.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => selectThread(t.id)}
-                className={`group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm ${
-                  t.id === selectedId ? "bg-panel-2 text-ink" : "text-ink-dim hover:bg-panel-2/60"
-                }`}
-              >
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[t.status]}`} />
-                <span className="truncate">{t.title}</span>
-                {t.mode === "plan" && (
-                  <span className="ml-auto shrink-0 rounded border border-warn/40 px-1 text-[0.6rem] uppercase text-warn">
-                    plan
-                  </span>
+              <div key={t.id}>
+                <div
+                  className={`group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm ${
+                    t.id === selectedId ? "bg-panel-2 text-ink" : "text-ink-dim hover:bg-panel-2/60"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[t.status]}`} />
+                  {renaming === t.id ? (
+                    <input
+                      value={draft}
+                      autoFocus
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename(t);
+                        if (e.key === "Escape") setRenaming(null);
+                      }}
+                      onBlur={() => commitRename(t)}
+                      className="min-w-0 flex-1 rounded border border-accent/50 bg-panel px-1.5 py-0.5 text-sm text-ink outline-none"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => selectThread(t.id)}
+                      onDoubleClick={() => startRename(t)}
+                      title={t.title}
+                      className="min-w-0 flex-1 truncate text-left"
+                    >
+                      {t.title}
+                    </button>
+                  )}
+                  {t.mode === "plan" && renaming !== t.id && (
+                    <span className="shrink-0 rounded border border-warn/40 px-1 text-[0.6rem] uppercase text-warn">
+                      plan
+                    </span>
+                  )}
+                  {renaming !== t.id && (
+                    <span className="flex shrink-0 items-center opacity-0 group-hover:opacity-100">
+                      <button
+                        onClick={() => startRename(t)}
+                        title="Rename thread"
+                        className="rounded px-1 text-ink-faint hover:bg-panel hover:text-ink"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() => setConfirming(confirming === t.id ? null : t.id)}
+                        title="Delete thread"
+                        className={`rounded px-1 hover:bg-panel hover:text-danger ${
+                          confirming === t.id ? "text-danger opacity-100" : "text-ink-faint"
+                        }`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )}
+                </div>
+
+                {confirming === t.id && (
+                  <div className="mb-1 ml-2 mr-2 rounded-lg border border-danger/30 bg-danger/5 px-2.5 py-2 text-[0.72rem]">
+                    <p className="text-ink-dim">
+                      Delete this thread, its history, and its agent session? This cannot be undone.
+                    </p>
+                    <div className="mt-1.5 flex gap-1.5">
+                      <button
+                        onClick={() => {
+                          send({ type: "delete_thread", threadId: t.id });
+                          setConfirming(null);
+                        }}
+                        className="rounded border border-danger/50 bg-danger/10 px-2 py-0.5 text-danger hover:bg-danger/20"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => setConfirming(null)}
+                        className="rounded border border-border px-2 py-0.5 text-ink-dim hover:bg-panel-2"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
                 )}
-              </button>
+              </div>
             ))}
           </div>
         ))}

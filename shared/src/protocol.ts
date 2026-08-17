@@ -122,6 +122,9 @@ export type ClientMessage =
   /** Run a server-scoped slash command against a thread. */
   | { type: "command"; threadId: string; name: string; args?: string }
   | { type: "create_thread"; mode?: ThreadMode }
+  | { type: "rename_thread"; threadId: string; title: string }
+  /** Hard delete: the thread, its history, and its agent session all go. */
+  | { type: "delete_thread"; threadId: string }
   | { type: "set_mode"; threadId: string; mode: ThreadMode }
   | { type: "answer_question"; threadId: string; questionId: string; answer: string }
   | { type: "approve_plan"; threadId: string }
@@ -139,6 +142,7 @@ export type ServerMessage =
   | { type: "hello"; threads: ThreadMeta[] }
   | { type: "thread_created"; thread: ThreadMeta }
   | { type: "thread_updated"; thread: ThreadMeta }
+  | { type: "thread_deleted"; threadId: string }
   | { type: "status"; threadId: string; status: ThreadStatus; mode: ThreadMode }
   | {
       type: "event";

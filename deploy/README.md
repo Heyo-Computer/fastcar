@@ -14,7 +14,7 @@ serverctl exec fastcar -- /opt/fastcar/preflight.sh
 
 | File | What it is |
 | --- | --- |
-| `image/Dockerfile` | The rootfs: Node 22 + Postgres + git + the built app at `/opt/fastcar` |
+| `image/Dockerfile` | The rootfs: Node 22 + Postgres + git + codegraph + the built app at `/opt/fastcar` |
 | `image/init.sh` | PID 1: mounts, network, sshd, data disk at `/workspace`, local Postgres |
 | `image/start.sh` | `vm.start_command` — the only place the app's env is read |
 | `image/preflight.sh` | In-guest checks, run over `serverctl exec` |
@@ -96,6 +96,18 @@ serverctl shell fastcar                # interactive shell in the guest
 serverctl exec fastcar -- tail -50 /workspace/log/fastcar.log
 serverctl restart fastcar              # recycle the VM
 serverctl feed                         # deploy/issue events
+```
+
+Code search inside the VM: `/usr/local/bin/codegraph` is a tree-sitter symbol
+index the agents use instead of grepping (built in a throwaway stage of the
+Dockerfile from a pinned `CODEGRAPH_REF`; bump that ARG to upgrade it). The
+server re-indexes a repository on clone/pull/checkout, and adds `.codegraph/` to
+each repo's `.git/info/exclude` so the index never shows up in `git status` or
+gets committed. Nothing depends on it: with the binary absent the agents fall
+back to grep.
+
+```sh
+serverctl exec fastcar -- sh -c 'cd /workspace/repos/<name> && codegraph --text search <symbol>'
 ```
 
 Git auth inside the VM: the agent's `git_clone`/`git_push` use whatever

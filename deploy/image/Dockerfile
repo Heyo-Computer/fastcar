@@ -54,6 +54,61 @@
 # build's devDependencies (vite, tailwind, typescript) in the runtime tree.
 # Neither is free to remove — init.sh probes for initdb, and `npm prune
 # --omit=dev` would take tsx with it, which start.sh runs the server through.
+
+# ---------------------------------------------------------------------------
+# codegraph — tree-sitter code navigation, built here and copied in as a single
+# 8.6 MB binary. It gives the agents symbol-level search over cloned
+# repos (rust/python/js/ts): `search` returns declarations instead of every
+# textual hit, `outline` renders a 690-line file as 45 signature lines, and
+# `snippet` pulls one function instead of a whole file. It complements grep
+# rather than replacing it — it indexes symbols only, so string literals,
+# config, SQL, shell and markdown still need grep.
+#
+# Built from source in a throwaway stage: only the binary crosses into the
+# rootfs, so the ~1.3 GB Rust toolchain costs image build time (~1 min cold,
+# 16 s of it cargo) and zero rootfs bytes. Measured on this tree: export tar
+# 929 MB -> 938 MB, i.e. +9 MB (~1%) for the stripped binary — the one addition
+# here that is paid on every cold boot, and the reason it is stripped.
+#
+# The builder is bookworm because the runtime base is: the binary links glibc
+# dynamically, so the two Debian releases have to match. Swapping either base
+# without the other gives a rootfs whose codegraph dies on a symbol version
+# error the first time an agent runs it. (Architecture follows the build host,
+# like every other layer here — build on the same arch the VM runs.)
+#
+# The toolchain is pinned to a minor version, not `rust:1`. codegraph declares
+# no rust-toolchain.toml and no rust-version, so this line is the *only* place
+# its toolchain is decided: `rust:1` floats forward and would let a future
+# release change or break a build of source that never moved. Its Cargo.toml is
+# edition 2024, so the floor is Rust 1.85; 1.97 is what this was verified on.
+# The tag still takes patch updates within 1.97.
+#
+# CODEGRAPH_REF is pinned rather than tracking main. `heyvm mvm build` passes no
+# --build-arg, so these defaults are the real configuration — an unpinned ref
+# would silently change the agents' search tool between image builds. Bump it
+# deliberately, and note the repo is public (no build-time credentials). The
+# commit need not be a branch tip: GitHub serves any reachable SHA.
+FROM rust:1.97-slim-bookworm AS codegraph
+ARG CODEGRAPH_REPO=https://github.com/Heyo-Computer/heyo-public.git
+ARG CODEGRAPH_REF=0df9faba2d70242a2e231b8d15cf04e0feb690b6
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+# Fetch just the pinned commit: the whole repo is only ~7 MB of history, and a
+# single-commit fetch keeps the builder honest about what it is compiling.
+RUN git init /src \
+    && git -C /src remote add origin "$CODEGRAPH_REPO" \
+    && git -C /src fetch --depth 1 origin "$CODEGRAPH_REF" \
+    && git -C /src checkout FETCH_HEAD
+WORKDIR /src/codegraph
+# --locked builds the dependency set in the committed Cargo.lock and fails if it
+# is stale, so the pinned commit fully determines the binary. The versions are
+# echoed because this is the only record of what built it when a future bump
+# breaks something.
+RUN rustc --version \
+    && cargo build --release --locked \
+    && strip target/release/codegraph \
+    && ./target/release/codegraph --version
+
 FROM node:22-bookworm-slim
 
 # System deps, per heyvm image conventions plus fastcar's own needs:
@@ -92,6 +147,11 @@ RUN mkdir -p /run/sshd /etc/ssh/sshd_config.d \
 # rewrite it from DNS_SERVER.
 COPY deploy/image/resolv.conf /etc/heyo/resolv.conf
 
+# The code-navigation binary from the stage above. /usr/local/bin is on PATH for
+# both `serverctl exec` and the agents' bash tool, and the server shells out to
+# it by bare name after a clone (services/git.ts).
+COPY --from=codegraph /src/codegraph/target/release/codegraph /usr/local/bin/codegraph
+
 # The application. Context is the repo root; .dockerignore keeps node_modules,
 # local state and build output out of the context so the install below is
 # reproducible inside the image.
@@ -117,6 +177,7 @@ RUN test -x /init.sh \
     && test -x /usr/sbin/mkfs.ext4 \
     && node --version \
     && git --version \
+    && codegraph --version \
     && ls /usr/lib/postgresql/*/bin/initdb \
     && node_modules/.bin/tsx --version \
     && test -f web/dist/index.html \

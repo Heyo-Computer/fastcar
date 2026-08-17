@@ -52,6 +52,16 @@ try {
   assert(fs.existsSync(path.join(repo.path, "README.md")), "clone materialized the working tree");
   assert(repo.defaultBranch === "main", `default branch detected (${repo.defaultBranch})`);
 
+  // codegraph indexes at clone time. The index lives inside the checkout, so it
+  // must be excluded locally — otherwise the repo reads dirty forever and
+  // `git_commit` with addAll would commit it into the user's project.
+  if (fs.existsSync(path.join(repo.path, ".codegraph", "index.json"))) {
+    const exclude = fs.readFileSync(path.join(repo.path, ".git/info/exclude"), "utf8");
+    assert(exclude.includes(".codegraph/"), "clone-time index is ignored via .git/info/exclude");
+  } else {
+    console.log("skip: codegraph not on PATH — clone built no index");
+  }
+
   await checkoutBranch(repoName, "feature/smoke", true);
   fs.writeFileSync(path.join(repo.path, "change.txt"), "hello from fastcar\n");
   const commitOut = await commitRepo(cfg, repoName, "smoke: add change.txt", true);

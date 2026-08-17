@@ -134,7 +134,12 @@ recurses forever.
 ## Using it
 
 - **Threads** live in the left sidebar (date-grouped); pick one on boot or
-  start a new thread (or a new *plan* thread).
+  start a new thread (or a new *plan* thread). Hover a thread for ✎ (rename —
+  double-clicking the title works too, and `/rename <title>` renames the open
+  thread) and × (delete, after a confirm). Deleting is a hard delete: the row,
+  its history (events cascade), and its Pi session file all go, a run in flight
+  is aborted, and the sidebar falls through to the next thread. A renamed thread
+  keeps its name — auto-titling only ever fills in an untitled one.
 - **Tasks** are a chat message or an attached/dropped `.md` file (sent as the
   task specification). The 🎙️ button records a voice prompt and drops the
   transcript into the composer.
@@ -142,8 +147,8 @@ recurses forever.
   (↑↓ to move, ⏎/⇥ to pick, esc to dismiss). Commands never reach the model —
   they render into the thread as app output: `/help`, `/context` (context
   window, tokens, cost), `/compact [focus]`, `/repos`, `/purge [repo]`,
-  `/memories [query]`, `/agents`, `/tools`, `/plan`, `/act`, `/new [plan]`.
-  The registry in
+  `/memories [query]`, `/agents`, `/tools`, `/rename <title>`, `/plan`, `/act`,
+  `/new [plan]`. The registry in
   `server/src/threads/commands.ts` is the single source of truth: the menu is
   served from it over `GET /api/commands`, so it can never offer something the
   server cannot run. Server commands need an idle thread.
@@ -186,6 +191,16 @@ recurses forever.
   only ever deleted from inside `FASTCAR_REPOS_DIR` — a repository registered
   from elsewhere is deregistered and left on disk. The agent's `git_purge` tool
   never forces, so unsaved work can only be destroyed by you.
+- **Code search**: the VM image ships [codegraph](https://github.com/Heyo-Computer/heyo-public/tree/main/codegraph),
+  a tree-sitter symbol index the agents drive over bash — `codegraph --text
+  search <name>` returns declarations (with kind, file, line) instead of every
+  textual hit, `outline <file>` renders a 700-line file as ~45 signature lines,
+  and `snippet <file> <symbol>` pulls one function instead of the whole file.
+  It covers rust/python/js/ts symbols only, so grep still owns string literals,
+  config, SQL, shell and markdown; the prompts say so. The server re-indexes a
+  repo on clone/pull/checkout and local-ignores `.codegraph/` via
+  `.git/info/exclude`, so the index never dirties the checkout or gets
+  committed. Without the binary (a plain dev box) everything falls back to grep.
 - **Memories** are saved to Postgres by the agent (`memory_save` etc.) and
   injected into its system prompt on new sessions.
 - While the agent is running, sending a message **steers** it; ◼ Stop aborts

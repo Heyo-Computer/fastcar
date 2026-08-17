@@ -51,6 +51,49 @@ function identityArgs(cfg: Config): string[] {
   return args;
 }
 
+/**
+ * Keep `.codegraph/` out of the repository's own git status.
+ *
+ * The index lives at the indexed root, so without this every cloned repo reads
+ * as dirty: the UI shows a permanent uncommitted-changes dot, purge refuses,
+ * and `git_commit` with addAll would commit our index into the user's project.
+ * `.git/info/exclude` is the local-only ignore list — the repository's tracked
+ * .gitignore is theirs and stays untouched.
+ */
+function excludeIndexFromGit(dir: string): void {
+  try {
+    if (!fs.existsSync(path.join(dir, ".git"))) return;
+    const infoDir = path.join(dir, ".git", "info");
+    fs.mkdirSync(infoDir, { recursive: true });
+    const file = path.join(infoDir, "exclude");
+    const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    if (/^\.codegraph\/?$/m.test(current)) return;
+    const prefix = !current || current.endsWith("\n") ? "" : "\n";
+    fs.appendFileSync(file, `${prefix}.codegraph/\n`);
+  } catch (err) {
+    console.error(`failed to exclude .codegraph in ${dir}:`, err);
+  }
+}
+
+/**
+ * Refresh the repository's codegraph symbol index (see deploy/image/Dockerfile).
+ *
+ * Best-effort by design: the binary ships in the VM image but is not required —
+ * on a dev box without it, execFile fails with ENOENT and the agents simply fall
+ * back to grep. Bounded so a pathological repo cannot stall a git operation.
+ */
+function reindexForSearch(dir: string): Promise<void> {
+  excludeIndexFromGit(dir);
+  return new Promise((resolve) => {
+    execFile("codegraph", ["index", dir], { timeout: 60_000, cwd: dir }, (err) => {
+      if (err && (err as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`codegraph index failed for ${dir}:`, err.message);
+      }
+      resolve();
+    });
+  });
+}
+
 export function deriveRepoName(url: string): string {
   const base = url.replace(/\/+$/, "").split("/").pop() ?? "repo";
   return base.replace(/\.git$/, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "repo";
@@ -85,6 +128,8 @@ export async function cloneRepo(
   await runGit(["clone", url, dest], undefined, signal);
   const branch = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], dest)).stdout.trim();
   const record = await registerRepo(repoName, url, dest, branch || null);
+  // Index at clone time so the first search an agent runs already works.
+  await reindexForSearch(dest);
   gitEvents.emit("changed");
   return record;
 }
@@ -92,6 +137,7 @@ export async function cloneRepo(
 export async function pullRepo(name: string, signal?: AbortSignal): Promise<string> {
   const repo = await resolveRepo(name);
   const { stdout, stderr } = await runGit(["pull", "--ff-only"], repo.path, signal);
+  await reindexForSearch(repo.path);
   gitEvents.emit("changed");
   return (stdout + stderr).trim();
 }
@@ -105,6 +151,8 @@ export async function checkoutBranch(
   const repo = await resolveRepo(name);
   const args = create ? ["checkout", "-b", branch] : ["checkout", branch];
   const { stdout, stderr } = await runGit(args, repo.path, signal);
+  // A checkout can rewrite the whole tree; re-indexing is incremental (ms).
+  await reindexForSearch(repo.path);
   gitEvents.emit("changed");
   return (stdout + stderr).trim();
 }

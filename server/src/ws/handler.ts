@@ -32,6 +32,12 @@ export function registerWs(app: FastifyInstance, manager: ThreadManager): void {
             case "command":
               await manager.command(msg.threadId, msg.name, msg.args ?? "");
               break;
+            case "rename_thread":
+              await manager.renameThread(msg.threadId, msg.title);
+              break;
+            case "delete_thread":
+              await manager.deleteThread(msg.threadId);
+              break;
             case "set_mode":
               await manager.setMode(msg.threadId, msg.mode);
               break;
