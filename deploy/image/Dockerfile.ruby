@@ -1,23 +1,32 @@
 # syntax=docker/dockerfile:1.7
-# Example workspace rootfs: Ubuntu 24.04 x86_64 for a Rails + Vite application.
+# Ubuntu 24.04 x86_64 rootfs carrying *both* halves of fastcar-ruby: the fastcar
+# harness (the server at /opt/fastcar, on :3000) and the Rails + Vite workspace
+# an agent then works inside.
 #
-# This is a *sibling* of image/Dockerfile, not a replacement. That one builds
-# the fastcar harness itself (Node 22 + the app at /opt/fastcar). This one
-# builds the environment a spawned VM hands to an agent that is going to work
-# on a Rails app: Ruby and Node via mise, Postgres 16 and Redis in-guest, and
-# the native libraries that Rails' usual suspects (pg, nokogiri, vips,
-# imagemagick, poppler, qpdf) link against.
+# It began as a pure workspace sibling of image/Dockerfile — that one builds the
+# harness on node:22 and nothing else; this one built the environment a spawned
+# VM hands to an agent, and COPYed no application at all. Running one image
+# under the other's contract is what broke: deployments/ruby-fastcar.json builds
+# this file but sets `vm.start_command: /opt/fastcar/start.sh` and health-checks
+# :3000/api/health, so the guest booted cleanly, served nothing, and was killed
+# at every boot_timeout_secs. The harness block near the end of this file is the
+# merge; the two images are no longer interchangeable descriptions of the same
+# job, and image/Dockerfile remains the slim harness-only build.
 #
-#     docker build --platform linux/amd64 -f deploy/image/Dockerfile.ruby -t rails-workspace .
-#     heyvm mvm build --local-only -f deploy/image/Dockerfile.ruby -c . -n rails-workspace
+# So this rootfs is: Ruby and Node via mise, Postgres 16 and Redis in-guest, the
+# native libraries Rails' usual suspects (pg, nokogiri, vips, imagemagick,
+# poppler, qpdf) link against — and the fastcar server that drives them.
 #
-# The application arrives per spawn by git clone into /workspace, so nothing of
-# the app is COPYed — but the boot block at the end of this file does copy
-# deploy/image/{init.ruby.sh,resolv.conf}, so the context must be the
-# repository root, not merely a valid directory. Requires BuildKit for the two
-# COPY heredocs below (the default
-# builder since Docker 23); on a legacy builder, split those scripts out into
-# deploy/image/*.sh and COPY them like the sibling image does.
+#     docker build --platform linux/amd64 -f deploy/image/Dockerfile.ruby -t fastcar-ruby .
+#     heyvm mvm build --local-only -f deploy/image/Dockerfile.ruby -c . -n fastcar-ruby
+#
+# The *agent's* application still arrives per spawn by git clone into /workspace.
+# What is COPYed is the harness and the boot block's
+# deploy/image/{init.ruby.sh,resolv.conf}, so the context must be the repository
+# root, not merely a valid directory. Requires BuildKit for the two COPY
+# heredocs below (the default builder since Docker 23); on a legacy builder,
+# split those scripts out into deploy/image/*.sh and COPY them like the sibling
+# image does.
 #
 # The heyvm contract this inherits, and what each half costs here:
 #
@@ -38,16 +47,27 @@
 #      /opt/mise/installs/ruby/$RUBY_VERSION on the data disk stay ABI-valid
 #      and a re-spawn skips recompiling them.
 #
-# On size. image/Dockerfile is slim on purpose: heyvmd's create call copies the
-# rootfs inside a 30s HTTP request, and ~26s of that budget went to a 2 GB
-# image. This one cannot be slim — a from-source Ruby needs the full toolchain,
-# and the native gems need the -dev headers *at spawn time*, so build-essential
-# and every -dev package here is load-bearing at runtime rather than build-only.
-# Measured at 3.45 GB. Two things follow: give a pool built on this image a create
-# timeout with room in it, and remember that `docker export` flattens the tree —
-# unlike normal image layers, an `apt-get purge` in a later step really does
-# shrink the exported rootfs. That is why rustc is installed, used to build
-# Ruby, and purged in the same block rather than left behind.
+# On size. image/Dockerfile is slim on purpose, and the reason used to be a hard
+# deadline: heyvmd copied the rootfs inside a synchronous 30s HTTP request, and
+# ~26s of that budget went to a 2 GB image, so anything this large simply never
+# booted. That ceiling is gone — `POST /sandbox-deploy` became asynchronous in
+# heyvm 0.43.1, answering 202 and doing the copy on a task — which is what makes
+# an image this size viable at all.
+#
+# It is still not free, just no longer fatal. This one cannot be slim: a
+# from-source Ruby needs the full toolchain, the native gems need the -dev
+# headers *at spawn time* (so build-essential and every -dev package here is
+# load-bearing at runtime, not build-only), and the harness block at the end adds
+# the fastcar server and its node_modules on top. Measure it after a change
+# rather than trusting this line, and remember that the copy is paid on every
+# cold boot as latency before the guest starts — roughly 13 s/GB on the ext4
+# host us2 runs, where `reflink_or_copy` cannot FICLONE. Give a pool built on
+# this image a boot_timeout_secs with room in it.
+#
+# One lever if it grows: `docker export` flattens the tree, so unlike normal
+# image layers an `apt-get purge` in a later step really does shrink the
+# exported rootfs. That is why rustc is installed, used to build Ruby, and
+# purged in the same block rather than left behind.
 #
 # Build time is dominated by compiling Ruby: roughly 5-12 min on a native
 # x86_64 builder, and most of a wall-clock hour under qemu emulation — so build
@@ -55,6 +75,49 @@
 # rather than inherited from the build host, because the mise and gh tarballs
 # are fetched by exact architecture-bearing name and a host-follows build would
 # quietly disagree with them.
+
+# ---------------------------------------------------------------------------
+# codegraph — tree-sitter code navigation, built in a throwaway stage and copied
+# into the rootfs as a single stripped ~8.6 MB binary. The fastcar server shells
+# out to it by bare name after a clone (services/git.ts), so it is not optional
+# once the harness lives here; the ~1.3 GB Rust toolchain costs build time and
+# zero rootfs bytes.
+#
+# Two pins that differ from the sibling image's copy of this stage, both because
+# the runtime base below is Ubuntu noble rather than Debian bookworm:
+#
+#   * `--platform=linux/amd64`, which the sibling leaves to follow the build
+#     host. It cannot follow it here: the runtime stage is pinned to amd64 and
+#     asserts it, so a host-follows builder on arm64 would drop an arm64 binary
+#     into an amd64 rootfs — an exec format error the first time an agent runs
+#     it, and nothing before that would notice.
+#   * The builder stays bookworm (glibc 2.36) while the runtime is noble (glibc
+#     2.39), which is the safe direction and not merely the convenient one:
+#     glibc is backward compatible, so a binary built against the older one runs
+#     against the newer. Building this on noble and running it on bookworm is
+#     what would fail, with a symbol version error. The `codegraph --version`
+#     assertion in the app block below runs inside the noble image and is what
+#     actually proves the pairing, rather than leaving it to this comment.
+#
+# CODEGRAPH_REF is pinned rather than tracking main: `heyvm mvm build` passes no
+# --build-arg, so these defaults are the real configuration, and an unpinned ref
+# would silently change the agents' search tool between image builds.
+FROM --platform=linux/amd64 rust:1.97-slim-bookworm AS codegraph
+ARG CODEGRAPH_REPO=https://github.com/Heyo-Computer/heyo-public.git
+ARG CODEGRAPH_REF=0df9faba2d70242a2e231b8d15cf04e0feb690b6
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+RUN git init /src \
+    && git -C /src remote add origin "$CODEGRAPH_REPO" \
+    && git -C /src fetch --depth 1 origin "$CODEGRAPH_REF" \
+    && git -C /src checkout FETCH_HEAD
+WORKDIR /src/codegraph
+# --locked builds the dependency set in the committed Cargo.lock and fails if it
+# is stale, so the pinned commit fully determines the binary.
+RUN rustc --version \
+    && cargo build --release --locked \
+    && strip target/release/codegraph \
+    && ./target/release/codegraph --version
 
 FROM --platform=linux/amd64 ubuntu:24.04
 
@@ -656,6 +719,67 @@ RUN for bin in su id awk sed tr seq tail mountpoint chown; do \
     && echo "base utility checks passed"
 
 # ---------------------------------------------------------------------------
+# The fastcar harness
+#
+# The half this image used to lack. The deployment that runs it names
+# /opt/fastcar/start.sh as vm.start_command and health-checks :3000/api/health,
+# and neither existed here — the guest booted perfectly, served nothing, and
+# app-lb killed it at every boot_timeout_secs with `sh: 1:
+# /opt/fastcar/start.sh: not found` in the guest's own log.
+#
+# Deliberately last. `COPY . /opt/fastcar` invalidates the build cache for
+# everything below it on any change to any file in the repo, and what sits above
+# is a from-source Ruby that costs 5-12 minutes to rebuild. Putting the app
+# after the toolchain means an ordinary app commit rebuilds only this block.
+#
+# Node comes from mise (26.2.0 above), not the sibling image's node:22 base. The
+# floor the app actually declares is >= 22.19 for the Pi SDK, so this satisfies
+# it — but it is a *different* major than the sibling builds against, and the
+# `npm run build` and `tsx --version` assertions below are what turn that from a
+# hope into a build failure if a dependency disagrees.
+COPY --from=codegraph /src/codegraph/target/release/codegraph /usr/local/bin/codegraph
+
+# Context is the repo root; .dockerignore keeps node_modules, web/dist, .git and
+# local state out, so the install below resolves from package-lock.json rather
+# than inheriting whatever the build host had lying around.
+COPY . /opt/fastcar
+WORKDIR /opt/fastcar
+
+# npm_config_cache overrides the /workspace/cache/npm this image configures
+# globally further up. That path is the *data disk*, which does not exist at
+# build time: left alone, the install would write its cache into the rootfs at
+# /workspace/cache, where the data disk mount then hides it at runtime — bytes
+# paid on every cold boot for a cache nothing can read. /tmp instead, removed in
+# the same layer.
+#
+# devDependencies are kept, not pruned. `npm prune --omit=dev` would take tsx
+# with it, and tsx is what start.sh runs the server through.
+RUN set -eux; \
+    npm_config_cache=/tmp/npm-build npm install --no-fund --no-audit; \
+    npm_config_cache=/tmp/npm-build npm run build; \
+    rm -rf /tmp/npm-build
+
+# start.sh is the deployment's vm.start_command and the only place the app reads
+# its env; preflight.sh is the manual health probe. Both arrive with the COPY
+# above — these are the mode bits and the /opt/fastcar/* entry points the
+# deployment and the runbooks name, which a git checkout does not guarantee.
+RUN set -eux; \
+    chmod +x /opt/fastcar/deploy/image/start.sh /opt/fastcar/deploy/image/preflight.sh; \
+    ln -sf /opt/fastcar/deploy/image/start.sh /opt/fastcar/start.sh; \
+    ln -sf /opt/fastcar/deploy/image/preflight.sh /opt/fastcar/preflight.sh
+
+# Build-time proof for the app half, in the same spirit as the toolchain block
+# above: each of these otherwise fails only once a VM is booted and app-lb is
+# waiting on a health check that will never turn.
+RUN set -eux; \
+    test -x /opt/fastcar/start.sh; \
+    test -x /opt/fastcar/preflight.sh; \
+    node_modules/.bin/tsx --version; \
+    test -f web/dist/index.html; \
+    codegraph --version; \
+    echo "fastcar app checks passed"
+
+# ---------------------------------------------------------------------------
 # Boot
 #
 # The load-bearing lines in this file. mvm-ctrl hardcodes `init=/init.sh` on
@@ -691,6 +815,9 @@ RUN test -x /init.sh \
     done \
     && echo "boot dependency checks passed"
 
-# Documentation only — docker export drops both. 3000 is Rails, 5173 is Vite.
+# Documentation only — docker export drops both. 3000 is the fastcar server, and
+# the port the deployment's vm.port proxies and health-checks; 5173 is Vite, for
+# an agent running the workspace app's dev server. Rails would collide with
+# fastcar on 3000 and has to be started on another port.
 EXPOSE 22 3000 5173
 CMD ["/init.sh"]
