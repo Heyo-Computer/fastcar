@@ -11,9 +11,11 @@
 #     docker build --platform linux/amd64 -f deploy/image/Dockerfile.ruby -t rails-workspace .
 #     heyvm mvm build --local-only -f deploy/image/Dockerfile.ruby -c . -n rails-workspace
 #
-# Nothing is COPYed from the build context — the application arrives per spawn
-# by git clone into /workspace — so the context argument only has to be valid,
-# not correct. Requires BuildKit for the two COPY heredocs below (the default
+# The application arrives per spawn by git clone into /workspace, so nothing of
+# the app is COPYed — but the boot block at the end of this file does copy
+# deploy/image/{init.ruby.sh,resolv.conf}, so the context must be the
+# repository root, not merely a valid directory. Requires BuildKit for the two
+# COPY heredocs below (the default
 # builder since Docker 23); on a legacy builder, split those scripts out into
 # deploy/image/*.sh and COPY them like the sibling image does.
 #
@@ -106,6 +108,11 @@ RUN test "$(dpkg --print-architecture)" = "amd64" \
 #   tzdata, locales              — Rails wants a zoneinfo db, and Ruby derives
 #                                  Encoding.default_external from the locale:
 #                                  without a UTF-8 one it is US-ASCII
+#   iproute2                     — init.ruby.sh brings eth0 up; the kernel's
+#                                  ip= only assigns the address. Absent, the
+#                                  guest boots with no network at all.
+#   openssh-server               — sshd, started by init. openssh-client is the
+#                                  wrong half: it has no /usr/sbin/sshd.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         pkg-config \
@@ -114,7 +121,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         jq \
         less \
+        iproute2 \
         openssh-client \
+        openssh-server \
         procps \
         rsync \
         unzip \
@@ -646,8 +655,42 @@ RUN for bin in su id awk sed tr seq tail mountpoint chown; do \
     done \
     && echo "base utility checks passed"
 
-# Documentation only — docker export drops both, and the real entry point is
-# the kernel's init= (see image/init.sh, which should call devservices).
-# 3000 is Rails, 5173 is the Vite dev server.
-EXPOSE 3000 5173
-CMD ["/usr/local/bin/devservices", "--foreground"]
+# ---------------------------------------------------------------------------
+# Boot
+#
+# The load-bearing lines in this file. mvm-ctrl hardcodes `init=/init.sh` on
+# the kernel cmdline (driver/firecracker.rs), so a rootfs without an executable
+# at that exact path panics in kernel_execve with `Requested init /init.sh
+# failed (error -2)` before a single line of userspace runs — which is exactly
+# what this image did while CMD was its only declared entry point. CMD is image
+# *config*: docker export drops it and the kernel never sees it.
+COPY deploy/image/resolv.conf  /etc/heyo/resolv.conf
+COPY deploy/image/init.ruby.sh /init.sh
+RUN chmod +x /init.sh && chmod 0644 /etc/heyo/resolv.conf
+
+# SSH host keys at build time so sshd does not block on entropy at first boot,
+# and password auth written explicitly because there is no cloud-init later.
+RUN mkdir -p /run/sshd /etc/ssh/sshd_config.d \
+    && echo "PermitRootLogin yes" >> /etc/ssh/sshd_config \
+    && echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config \
+    && echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-heyo.conf \
+    && chmod 644 /etc/ssh/sshd_config.d/50-heyo.conf \
+    && passwd -d root \
+    && ssh-keygen -A
+
+# Guard the contract above: a rename or a dropped COPY fails the build here
+# rather than as a kernel panic in the autoscaler. The utilities are the ones
+# init.ruby.sh calls that arrive with the *base image* or a package installed
+# for another reason, so nothing else names them — without `ip` the guest has
+# no network, without `blkid`/`mkfs.ext4` the data disk is never mounted and
+# devservices refuses to start.
+RUN test -x /init.sh \
+    && for bin in ip blkid mkfs.ext4 hostname dmesg su mount mknod bash \
+                  /usr/sbin/sshd /usr/local/bin/devservices; do \
+        command -v "$bin" >/dev/null || { echo "missing boot dependency: $bin"; exit 1; }; \
+    done \
+    && echo "boot dependency checks passed"
+
+# Documentation only — docker export drops both. 3000 is Rails, 5173 is Vite.
+EXPOSE 22 3000 5173
+CMD ["/init.sh"]
