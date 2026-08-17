@@ -7,6 +7,21 @@ a Hermes-style dark web UI, Postgres-backed threads and memories, a
 plan → approve → act workflow, blocking clarifying questions, Tavily web search,
 and voice prompts via speech-to-text.
 
+## Documentation site
+
+The rendered documentation lives on GitHub Pages:
+
+> **https://heyo-computer.github.io/fastcar/**
+
+(Replace `heyo-computer` with the actual GitHub username/organization above
+once GitHub Pages is enabled for the repository.)
+
+The source Markdown for the docs lives in [`artifacts/docs/`](artifacts/docs/).
+A GitHub Actions workflow
+([`.github/workflows/render-artifacts.yml`](.github/workflows/render-artifacts.yml))
+converts every `.md` file there to standalone HTML with pandoc and publishes
+the result to the `gh-pages` branch on every push to `main`.
+
 ## Architecture
 
 ```
