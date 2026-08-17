@@ -15,6 +15,7 @@ serverctl exec fastcar -- /opt/fastcar/preflight.sh
 | File | What it is |
 | --- | --- |
 | `image/Dockerfile` | The rootfs: Node 22 + Postgres + git + codegraph + the built app at `/opt/fastcar` |
+| `image/Dockerfile.ruby` | Example *workspace* rootfs (not used by this deployment): Ubuntu 24.04 x86_64, Ruby 4.0.5 + Node 26.2.0 via mise, Postgres 16 + Redis in-guest, the native image/PDF toolchain, and `devservices` / `project-setup` for per-spawn bring-up of a Rails + Vite checkout |
 | `image/init.sh` | PID 1: mounts, network, sshd, data disk at `/workspace`, local Postgres |
 | `image/start.sh` | `vm.start_command` — the only place the app's env is read |
 | `image/preflight.sh` | In-guest checks, run over `serverctl exec` |
