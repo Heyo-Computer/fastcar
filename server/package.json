@@ -11,7 +11,8 @@
     "migrate": "tsx src/db/migrate.ts",
     "smoke": "tsx src/dev/smoke.ts",
     "smoke:ws": "tsx src/dev/ws-smoke.ts",
-    "smoke:git": "tsx src/dev/git-smoke.ts"
+    "smoke:git": "tsx src/dev/git-smoke.ts",
+    "test": "tsx --test src/test/*.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.1",
@@ -22,11 +23,13 @@
     "@fastify/static": "^8.3.0",
     "@fastify/websocket": "^11.2.0",
     "fastify": "^5.6.2",
+    "nodemailer": "^6.9.16",
     "pg": "^8.16.3",
     "typebox": "1.3.7"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.15.5",
     "@types/ws": "^8.18.1",
     "tsx": "^4.20.5",

@@ -10,11 +10,13 @@ import type { ThreadMode } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { recentMemories } from "../db/memories.js";
 import { createAskUserTool, type AskUserBridge } from "../tools/askUser.js";
+import { createEmailTool } from "../tools/email.js";
 import { createMemoryTools } from "../tools/memory.js";
 import { createRunSubagentTool, type SubagentEventSink } from "../tools/runSubagent.js";
 import { createSubmitPlanTool, type SubmitPlanBridge } from "../tools/submitPlan.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
+import type { EmailService } from "../services/emailService.js";
 import { conductorPrompt } from "./prompts.js";
 import type { FastcarModels } from "./runtime.js";
 import type { SubagentManager } from "./subagents.js";
@@ -39,6 +41,8 @@ export interface ConductorDeps {
   askBridge: AskUserBridge;
   planBridge: SubmitPlanBridge;
   onSubagentEvent: SubagentEventSink;
+  /** Email service for the `email` agent tool (Feature 2). Optional in dev/smoke. */
+  email?: EmailService;
   /** Existing Pi JSONL session file to resume, or null for a fresh session. */
   sessionFile: string | null;
 }
@@ -70,6 +74,11 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
     ? SessionManager.open(deps.sessionFile, cfg.sessionDir, cfg.workdir)
     : SessionManager.create(cfg.workdir, cfg.sessionDir);
 
+  // Feature 2: the `email` agent tool is only registered when an EmailService
+  // is wired in (the dev/smoke entry point runs without one).
+  const emailTool = deps.email ? [createEmailTool(deps.email)] : [];
+  const emailNames = deps.email ? ["email"] : [];
+
   const { session } = await createAgentSession({
     cwd: cfg.workdir,
     agentDir,
@@ -82,7 +91,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       "read", "bash", "edit", "write", "grep", "find", "ls",
       "run_subagent", "ask_user", "submit_plan",
       "memory_save", "memory_search", "memory_list", "memory_delete",
-      "web_search",
+      "web_search", ...emailNames,
       ...GIT_TOOL_NAMES,
     ],
     customTools: [
@@ -91,6 +100,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       createSubmitPlanTool(deps.planBridge),
       ...createMemoryTools(threadId),
       createWebSearchTool(cfg),
+      ...emailTool,
       ...createGitTools(cfg),
     ],
     resourceLoader: loader,

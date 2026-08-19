@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   AgentName,
   PendingInteraction,
+  PromptThreadConfig,
   ServerMessage,
   StreamEvent,
   ThreadMeta,
@@ -19,6 +20,11 @@ import { expandMentions } from "../services/mentions.js";
 import { translateSessionEvent } from "../pi/events.js";
 import type { FastcarModels } from "../pi/runtime.js";
 import type { SubagentKind, SubagentManager } from "../pi/subagents.js";
+import { completePrompt } from "../services/llmService.js";
+import { getPromptTemplate, resolveTemplate } from "../services/promptTemplates.js";
+import { RateLimiter, postToWebhook, validateWebhookUrl } from "../services/webhook.js";
+import { WebhookTokenStore } from "../services/webhookTokens.js";
+import type { EmailService } from "../services/emailService.js";
 import { findCommand, parseCommandLine, runCommand } from "./commands.js";
 
 type Broadcast = (msg: ServerMessage) => void;
@@ -59,12 +65,16 @@ export class ThreadManager {
   private clients = new Set<Broadcast>();
   private deltaBuffers = new Map<string, { agent: AgentName; taskId?: string; kind: "text_delta" | "thinking_delta"; text: string }>();
   private deltaTimer: NodeJS.Timeout | null = null;
+  private readonly webhookTokens: WebhookTokenStore;
+  private readonly webhookLimiter = new RateLimiter(10, 60_000);
 
   constructor(
     private readonly cfg: Config,
     private readonly models: FastcarModels,
     private readonly subagents: SubagentManager,
+    private readonly email?: EmailService,
   ) {
+    this.webhookTokens = new WebhookTokenStore(cfg);
     gitEvents.on("changed", () => void this.broadcastRepos());
   }
 
@@ -122,6 +132,127 @@ export class ThreadManager {
     const meta = toMeta(rec);
     this.broadcast({ type: "thread_created", thread: meta });
     return meta;
+  }
+
+  /**
+   * Create a prompt thread (Feature 3): resolve the template, substitute
+   * variables, run the LLM, POST the result to the webhook, and record the
+   * delivery status in the thread history.
+   */
+  async createPromptThread(opts: {
+    title?: string;
+    templateId: string;
+    variables?: Record<string, string>;
+    webhookUrl: string;
+    webhookToken: string;
+  }): Promise<ThreadMeta> {
+    const template = getPromptTemplate(opts.templateId);
+    if (!template) throw new Error(`no such prompt template: ${opts.templateId}`);
+    const validation = validateWebhookUrl(opts.webhookUrl);
+    if (!validation.ok) throw new Error(`webhook URL invalid: ${validation.reason}`);
+
+    const rate = this.webhookLimiter.check(opts.webhookUrl);
+    if (!rate.allowed) {
+      throw new Error(
+        `webhook rate limit exceeded for ${opts.webhookUrl}; retry in ${Math.ceil((rate.retryAfterMs ?? 0) / 1000)}s`,
+      );
+    }
+
+    const promptText = resolveTemplate(template, opts.variables ?? {});
+    const rec = await threadsDb.createThread("act", "prompt");
+    const threadId = rec.id;
+    this.webhookTokens.set(threadId, opts.webhookToken);
+
+    const config: PromptThreadConfig = {
+      templateId: template.id,
+      webhookUrl: opts.webhookUrl,
+      webhookTokenSet: Boolean(opts.webhookToken),
+      webhookStatus: "pending",
+    };
+    const titled = await threadsDb.updateThread(threadId, {
+      title: opts.title?.trim() || `Prompt: ${template.id}`,
+      promptConfig: config,
+    });
+    if (titled) this.broadcast({ type: "thread_created", thread: toMeta(titled) });
+
+    // Record the resolved prompt as the user message that started this thread.
+    const rt = await this.getRuntime(threadId);
+    this.stageAndSend(rt, "conductor", undefined, {
+      kind: "user_message",
+      text: `Prompt thread (template: ${template.id}):\n\n${promptText}`,
+    });
+    await this.flushStaged(rt);
+
+    // Fire the generation + delivery asynchronously so the create call returns.
+    void this.runPromptThreadDelivery(threadId, promptText).catch((err) => {
+      console.error(`prompt thread ${threadId} delivery failed:`, err);
+    });
+
+    return titled ? toMeta(titled) : toMeta(rec);
+  }
+
+  private async runPromptThreadDelivery(threadId: string, promptText: string): Promise<void> {
+    const rt = await this.getRuntime(threadId);
+    let response = "";
+    let delivery: { ok: boolean; status: "success" | "error" | "skipped"; response: string };
+    try {
+      response = await completePrompt(this.models, promptText);
+      this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: response });
+      await this.flushStaged(rt);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.stageAndSend(rt, "conductor", undefined, {
+        kind: "error",
+        message: `LLM generation failed: ${message}`,
+      });
+      await this.flushStaged(rt);
+      delivery = { ok: false, status: "error", response: `LLM generation failed: ${message}` };
+      await this.recordPromptDelivery(threadId, delivery);
+      this.broadcast({ type: "prompt_thread_result", threadId, status: "error", response: delivery.response });
+      return;
+    }
+
+    const rec = await threadsDb.getThread(threadId);
+    const url = rec?.promptConfig?.webhookUrl ?? "";
+    const token = this.webhookTokens.get(threadId);
+    if (!url || !token) {
+      delivery = { ok: false, status: "skipped", response: "no webhook url/token set" };
+    } else {
+      delivery = await postToWebhook(url, token, { threadId, prompt: promptText, response }, undefined);
+    }
+    await this.recordPromptDelivery(threadId, delivery);
+    this.broadcast({
+      type: "prompt_thread_result",
+      threadId,
+      status: delivery.status,
+      response: delivery.response,
+    });
+  }
+
+  private async recordPromptDelivery(
+    threadId: string,
+    delivery: { ok: boolean; status: "success" | "error" | "skipped"; response: string },
+  ): Promise<void> {
+    const rt = this.runtimes.get(threadId);
+    if (rt) {
+      const label =
+        delivery.status === "success"
+          ? `✅ Webhook delivered. ${delivery.response}`
+          : delivery.status === "skipped"
+            ? `⏭️ Webhook skipped: ${delivery.response}`
+            : `❌ Webhook failed: ${delivery.response}`;
+      this.stageAndSend(rt, "conductor", undefined, { kind: "system", text: label });
+      await this.flushStaged(rt);
+    }
+    const rec = await threadsDb.getThread(threadId);
+    if (rec?.promptConfig) {
+      const next: PromptThreadConfig = {
+        ...rec.promptConfig,
+        webhookStatus: delivery.status,
+        webhookResponse: delivery.response,
+      };
+      await threadsDb.updateThread(threadId, { promptConfig: next });
+    }
   }
 
   async renameThread(threadId: string, title: string): Promise<void> {
@@ -245,12 +376,51 @@ export class ThreadManager {
   // ---------------------------------------------------------------- commands
 
   /**
+   * Send an email directly (no thread context) — used by the `/email` slash
+   * command when no threadId is provided. Returns the send result.
+   */
+  async sendEmailDirect(
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<{ ok: boolean; message: string; messageId?: string }> {
+    if (!this.email) return { ok: false, message: "email service is not available" };
+    return this.email.sendEmail(to, subject, body);
+  }
+
+  /**
    * Run a slash command and render its output into the thread. Commands never
    * reach the model: they read app state, or drive the thread directly.
    */
   async command(threadId: string, name: string, args = ""): Promise<void> {
     const rt = await this.getRuntime(threadId);
     return this.enqueue(rt, () => this.runSlashCommand(rt, name, args));
+  }
+
+  /**
+   * Structured `/email` slash command (Feature 2): send an email via the
+   * configured SMTP server and report success/failure into the thread.
+   */
+  async emailSlash(
+    threadId: string,
+    args: { to: string; subject: string; body: string },
+  ): Promise<void> {
+    if (!this.email) throw new Error("email service is not available");
+    const email = this.email;
+    const rt = await this.getRuntime(threadId);
+    return this.enqueue(rt, async () => {
+      this.assertAcceptsWork(rt);
+      this.stageAndSend(rt, "conductor", undefined, {
+        kind: "user_message",
+        text: `/email to=${args.to} subject=${args.subject}`,
+      });
+      const result = await email.sendEmail(args.to, args.subject, args.body);
+      const text = result.ok
+        ? `✅ Email sent to ${args.to}${result.messageId ? ` (messageId: ${result.messageId})` : ""}.`
+        : `❌ Email failed: ${result.message}`;
+      this.stageAndSend(rt, "conductor", undefined, { kind: "system", text });
+      await this.flushStaged(rt);
+    });
   }
 
   /** Must run inside the thread's queue slot. */
@@ -327,6 +497,24 @@ export class ThreadManager {
   // ---------------------------------------------------------------- steer / abort
 
   async steer(threadId: string, text: string): Promise<void> {
+    // Steering commands drive subagent control directly, bypassing the model.
+    // Only `cancel <taskId>` is recognized for now; anything else is forwarded
+    // to the conductor as ordinary steering input.
+    const match = /^\s*cancel\s+(\S+)\s*$/i.exec(text);
+    if (match) {
+      const taskId = match[1]!;
+      this.subagents.cancel(taskId);
+      const rt = this.runtimes.get(threadId);
+      if (rt) {
+        this.stageAndSend(rt, "conductor", undefined, {
+          kind: "system",
+          text: `Steering: cancelled subagent task ${taskId}.`,
+        });
+        await this.flushStaged(rt);
+      }
+      return;
+    }
+
     const rt = this.runtimes.get(threadId);
     if (!rt?.conductor || rt.status !== "running") throw new Error("agent is not running");
     this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text: `(steer) ${text}` });
@@ -466,6 +654,7 @@ export class ThreadManager {
           },
         },
         onSubagentEvent: (kind, taskId, ev) => this.onSubagentEvent(rt, kind, taskId, ev),
+        email: this.email,
         sessionFile: rec?.piSessionFile ?? null,
       });
 

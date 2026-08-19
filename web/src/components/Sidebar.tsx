@@ -60,6 +60,10 @@ export function Sidebar() {
     send({ type: "create_thread", mode });
   };
 
+  const newPromptThread = () => {
+    useStore.getState().setModal("newPrompt");
+  };
+
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-border bg-panel">
       <div className="flex items-center gap-2 px-4 py-3.5 border-b border-border">
@@ -88,6 +92,13 @@ export function Sidebar() {
           Plan
         </button>
       </div>
+      <button
+        onClick={newPromptThread}
+        title="Create a prompt thread that runs a template and POSTs the result to a webhook"
+        className="mx-3 mb-1 w-[calc(100%-1.5rem)] rounded-lg border border-accent-dim/30 bg-accent-dim/10 px-3 py-1.5 text-sm text-accent hover:bg-accent-dim/20"
+      >
+        + Prompt thread
+      </button>
 
       <nav className="flex-1 overflow-y-auto px-2 pb-4">
         {groups.map((g) => (

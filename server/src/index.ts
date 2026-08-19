@@ -14,6 +14,8 @@ import { SubagentManager } from "./pi/subagents.js";
 import { ThreadManager } from "./threads/manager.js";
 import { registerRoutes } from "./http/routes.js";
 import { registerWs } from "./ws/handler.js";
+import { ArtifactService } from "./services/artifacts.js";
+import { EmailService } from "./services/emailService.js";
 import { startMockOpenAI } from "./dev/mock-openai.js";
 
 const cfg = loadConfig();
@@ -25,14 +27,16 @@ await resetTransientStatuses();
 
 const models = await buildModels(cfg);
 const subagents = new SubagentManager(models, cfg);
-const manager = new ThreadManager(cfg, models, subagents);
+const artifacts = new ArtifactService(cfg);
+const email = new EmailService(cfg);
+const manager = new ThreadManager(cfg, models, subagents, email);
 
 const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);
 await app.register(fastifyMultipart);
 
-registerRoutes(app, cfg);
-registerWs(app, manager);
+registerRoutes(app, cfg, { artifacts, email });
+registerWs(app, manager, cfg);
 
 // Serve the built web UI in production (web/dist); Vite dev server proxies to us in dev.
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");

@@ -67,6 +67,9 @@ export function conductorPrompt(mode: ThreadMode, memories: Memory[]): string {
 
 export const MAXCODING_PROMPT = `You are a senior software engineer completing a delegated coding task. Work autonomously — you cannot ask the user questions. If a requirement is ambiguous, pick the most reasonable reading and record the assumption in your report.
 
+## Safety
+Do not use commands that kill the Fastcar process. Avoid anything that would stop the server, the conductor, or your own subagent session (e.g. pkill, killall, kill -9 on fastcar/node/tsx, or shutting down the VM). If a process needs restarting, say so in your report rather than killing it yourself.
+
 ## The machine is yours
 You run on a dedicated VM with full shell access. Install whatever the task needs — the project's own package manager (npm/pnpm/yarn, pip/uv, cargo, go), system packages via apt-get, missing toolchains — rather than working around a missing dependency. Respect the project's lockfile.
 

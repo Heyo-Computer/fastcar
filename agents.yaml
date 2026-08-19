@@ -9,3 +9,27 @@ agents:
   general:
     name: maxcoding
     description: Default agent when no specific role is required.
+
+# Agent tool definitions (Feature 2). These document the input/output schema
+# for tools the conductor and subagents can call. The implementations live in
+# server/src/tools/*.ts; this section is the human/machine-readable contract.
+tools:
+  email:
+    description: Send an email via the configured SMTP server. Returns success/failure.
+    input:
+      to:
+        type: string
+        description: Recipient email address.
+      subject:
+        type: string
+        description: Email subject line.
+      body:
+        type: string
+        description: Plain-text email body.
+    output:
+      success:
+        type: boolean
+        description: Whether the email was accepted by the SMTP server.
+      message:
+        type: string
+        description: Status message (sent confirmation or error reason). Optional on success.
