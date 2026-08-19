@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import type {
   AgentName,
+  ArtifactNode,
   CommandSpec,
   PendingInteraction,
   PersistedEvent,
+  PromptTemplate,
   RepoStatus,
   ServerMessage,
   StreamEvent,
@@ -69,11 +71,21 @@ export interface AppState {
   selectedId: string | null;
   chats: Record<string, ThreadChat>;
   pending: Record<string, PendingInteraction | null>;
+  /** Webhook delivery status for prompt threads (Feature 3). */
+  promptStatus: Record<string, { status: string; response?: string }>;
   repos: RepoStatus[];
   /** Slash commands the server offers, for the composer's `/` menu. */
   commands: CommandSpec[];
+  /** Predefined prompt templates (Feature 3). */
+  promptTemplates: PromptTemplate[];
+  /** Artifact trees per thread (Feature 1). */
+  artifactTrees: Record<string, ArtifactNode[]>;
   /** Thread the UI should auto-select when it is created by us. */
   awaitingCreatedThread: boolean;
+  /** UI overlay state: which modal is open. */
+  modal: "none" | "settings" | "newPrompt" | "addArtifact";
+  /** Last slash_result ack (Feature 2). */
+  lastSlashResult: { ok: boolean; message: string } | null;
 
   setConnection(c: AppState["connection"]): void;
   handleServer(msg: ServerMessage): void;
@@ -81,6 +93,9 @@ export interface AppState {
   loadHistory(id: string): Promise<void>;
   loadRepos(): Promise<void>;
   loadCommands(): Promise<void>;
+  loadPromptTemplates(): Promise<void>;
+  loadArtifacts(threadId: string): Promise<void>;
+  setModal(m: AppState["modal"]): void;
 }
 
 let keyCounter = 0;
@@ -365,11 +380,18 @@ export const useStore = create<AppState>((set, get) => ({
   selectedId: null,
   chats: {},
   pending: {},
+  promptStatus: {},
   repos: [],
   commands: [],
+  promptTemplates: [],
+  artifactTrees: {},
   awaitingCreatedThread: false,
+  modal: "none",
+  lastSlashResult: null,
 
   setConnection: (connection) => set({ connection }),
+
+  setModal: (modal) => set({ modal }),
 
   handleServer: (msg) => {
     const state = get();
@@ -396,12 +418,16 @@ export const useStore = create<AppState>((set, get) => ({
         const threads = state.threads.filter((t) => t.id !== msg.threadId);
         const chats = { ...state.chats };
         const pending = { ...state.pending };
+        const promptStatus = { ...state.promptStatus };
+        const artifactTrees = { ...state.artifactTrees };
         delete chats[msg.threadId];
         delete pending[msg.threadId];
+        delete promptStatus[msg.threadId];
+        delete artifactTrees[msg.threadId];
         // Deleting the open thread falls through to the next most recent one.
         const selectedId =
           state.selectedId === msg.threadId ? (threads[0]?.id ?? null) : state.selectedId;
-        set({ threads, chats, pending, selectedId });
+        set({ threads, chats, pending, promptStatus, artifactTrees, selectedId });
         if (selectedId && selectedId !== state.selectedId && !chats[selectedId]?.loaded) {
           void get().loadHistory(selectedId);
         }
@@ -451,6 +477,17 @@ export const useStore = create<AppState>((set, get) => ({
           },
         });
         break;
+      case "prompt_thread_result":
+        set({
+          promptStatus: {
+            ...state.promptStatus,
+            [msg.threadId]: { status: msg.status, response: msg.response },
+          },
+        });
+        break;
+      case "slash_result":
+        set({ lastSlashResult: { ok: msg.ok, message: msg.message } });
+        break;
       case "error": {
         if (msg.threadId) {
           const chat = state.chats[msg.threadId] ?? emptyChat();
@@ -467,6 +504,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectThread: (id) => {
     set({ selectedId: id });
     if (id && !get().chats[id]?.loaded) void get().loadHistory(id);
+    if (id && !get().artifactTrees[id]) void get().loadArtifacts(id);
   },
 
   loadRepos: async () => {
@@ -478,6 +516,20 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadCommands: async () => {
     set({ commands: await fetchCommands() });
+  },
+
+  loadPromptTemplates: async () => {
+    const res = await fetch("/api/prompt-templates");
+    if (!res.ok) return;
+    const data = (await res.json()) as { templates: PromptTemplate[] };
+    set({ promptTemplates: data.templates });
+  },
+
+  loadArtifacts: async (threadId) => {
+    const res = await fetch(`/api/threads/${threadId}/artifacts`);
+    if (!res.ok) return;
+    const data = (await res.json()) as { artifacts: ArtifactNode[] };
+    set({ artifactTrees: { ...get().artifactTrees, [threadId]: data.artifacts } });
   },
 
   loadHistory: async (id) => {

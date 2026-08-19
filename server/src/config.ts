@@ -19,6 +19,10 @@ export interface Config {
   tavilyApiKey: string | undefined;
   openrouterBaseUrl: string;
   inceptionBaseUrl: string;
+  /** Token identifying an admin caller (Feature 2/3 restrictions). Blank = no auth. */
+  adminToken: string | undefined;
+  /** Whose identity new threads/artifacts are owned by when no caller is identified. */
+  defaultOwner: string | null;
 }
 
 /**
@@ -79,5 +83,7 @@ export function loadConfig(): Config {
     inceptionBaseUrl: mock
       ? `http://127.0.0.1:${mockPort}/v1`
       : "https://api.inceptionlabs.ai/v1",
+    adminToken: env("FASTCAR_ADMIN_TOKEN"),
+    defaultOwner: env("FASTCAR_DEFAULT_OWNER") ?? null,
   };
 }

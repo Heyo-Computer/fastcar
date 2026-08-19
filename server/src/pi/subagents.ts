@@ -103,6 +103,13 @@ function mergeUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
 
 export class SubagentManager {
   private semaphores: Record<SubagentKind, Semaphore>;
+  /**
+   * AbortControllers for in-flight subagent runs, keyed by taskId. The
+   * conductor's own tool-call signal is forwarded into each controller so a
+   * conductor-level abort and an explicit `cancel(taskId)` both reach the
+   * underlying agent session.
+   */
+  private readonly controllers = new Map<string, AbortController>();
 
   constructor(
     private readonly models: FastcarModels,
@@ -114,11 +121,32 @@ export class SubagentManager {
     };
   }
 
+  /**
+   * Abort a running subagent by its taskId. Safe to call when no run is in
+   * flight for the id (or after it has finished) — it is a no-op then.
+   */
+  cancel(taskId: string): void {
+    this.controllers.get(taskId)?.abort();
+  }
+
   async run(req: SubagentRunRequest): Promise<SubagentReport> {
     const release = await this.semaphores[req.kind].acquire();
+    // Create an internal controller so this manager can cancel a run by taskId
+    // even when the caller did not supply a signal. If the caller's signal
+    // fires, forward it so conductor-driven aborts still propagate.
+    const controller = new AbortController();
+    const external = req.signal;
+    const onExternalAbort = () => controller.abort();
+    external?.addEventListener("abort", onExternalAbort);
+    // addEventListener does not replay a prior abort, so forward an already-
+    // aborted caller signal immediately.
+    if (external?.aborted) controller.abort();
+    this.controllers.set(req.taskId, controller);
     try {
-      return await this.runInner(req);
+      return await this.runInner({ ...req, signal: controller.signal });
     } finally {
+      external?.removeEventListener("abort", onExternalAbort);
+      this.controllers.delete(req.taskId);
       release();
     }
   }

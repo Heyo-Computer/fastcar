@@ -8,14 +8,112 @@ export type ThreadMode = "plan" | "act";
 export type ThreadStatus = "idle" | "running" | "awaiting_input" | "awaiting_approval";
 export type AgentName = "conductor" | "maxcoding" | "minimodel";
 
+/**
+ * The kind of thread. "chat" is the normal interactive thread; "prompt" runs
+ * a predefined prompt template through the LLM on creation and POSTs the
+ * result to a webhook. The field is named `threadType` (not `type`) so it
+ * never collides with the `type` discriminant on the surrounding message
+ * unions — `ThreadMeta` is a plain interface, but the naming stays consistent
+ * across the wire.
+ */
+export type ThreadType = "chat" | "prompt";
+
 export interface ThreadMeta {
   id: string;
   title: string;
   mode: ThreadMode;
   status: ThreadStatus;
   archived: boolean;
+  threadType: ThreadType;
   createdAt: string; // ISO
   updatedAt: string; // ISO
+}
+
+/** Configuration carried by a prompt thread (Feature 3). */
+export interface PromptThreadConfig {
+  templateId: string;
+  webhookUrl: string;
+  /** Bearer token is stored encrypted server-side; never sent to the client. */
+  webhookTokenSet: boolean;
+  /** Webhook delivery status, set after creation runs the prompt. */
+  webhookStatus: "pending" | "success" | "error" | "skipped";
+  webhookResponse?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts (Feature 1): user-created nested files under a thread
+// ---------------------------------------------------------------------------
+
+export interface Artifact {
+  id: string;
+  threadId: string;
+  /** UUID of the parent artifact, or null at the root of the thread's tree. */
+  parentArtifactId: string | null;
+  name: string;
+  /** MIME / content type, e.g. "text/markdown", "application/octet-stream". */
+  contentType: string;
+  /** Size of the stored content in bytes. */
+  size: number;
+  /** Owning user id, or null when auth is disabled (single-user dev mode). */
+  ownerId: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+/** A node in the artifact tree returned by GET /api/threads/:id/artifacts. */
+export interface ArtifactNode extends Artifact {
+  children: ArtifactNode[];
+}
+
+/** GET /api/threads/:id/artifacts */
+export interface ArtifactsTreeResponse {
+  artifacts: ArtifactNode[];
+}
+
+/** GET /api/artifacts/:id */
+export interface ArtifactResponse extends Artifact {
+  /** Inline text content (text/* only); absent for binary artifacts. */
+  content?: string;
+  /** Relative path under data/artifacts/ where the bytes live. */
+  storagePath: string;
+}
+
+/** POST /api/threads/:id/artifacts (multipart or JSON). */
+export interface CreateArtifactResponse {
+  artifact: Artifact;
+}
+
+/** GET /api/prompt-templates */
+export interface PromptTemplatesResponse {
+  templates: PromptTemplate[];
+}
+
+export interface PromptTemplate {
+  id: string;
+  description: string;
+  promptText: string;
+  /** Variable names the promptText substitutes with {{name}}. */
+  variables?: string[];
+}
+
+/** GET /api/smtp — the password is never returned. */
+export interface SmtpSettingsResponse {
+  host: string;
+  port: number;
+  username: string;
+  fromAddress: string;
+  secure: boolean;
+  configured: boolean;
+}
+
+/** POST /api/smtp — password is optional (blank keeps the stored value). */
+export interface SmtpSettingsRequest {
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  fromAddress: string;
+  secure: boolean;
 }
 
 /** A pending interaction that must survive page refresh (stored in threads.pending_json). */
@@ -122,6 +220,15 @@ export type ClientMessage =
   /** Run a server-scoped slash command against a thread. */
   | { type: "command"; threadId: string; name: string; args?: string }
   | { type: "create_thread"; mode?: ThreadMode }
+  /** Create a prompt thread (Feature 3): resolve a template, run the LLM, POST the result to the webhook. */
+  | {
+      type: "create_prompt_thread";
+      title?: string;
+      templateId: string;
+      variables?: Record<string, string>;
+      webhookUrl: string;
+      webhookToken: string;
+    }
   | { type: "rename_thread"; threadId: string; title: string }
   /** Hard delete: the thread, its history, and its agent session all go. */
   | { type: "delete_thread"; threadId: string }
@@ -132,7 +239,16 @@ export type ClientMessage =
   | { type: "abort"; threadId: string }
   | { type: "steer"; threadId: string; text: string }
   /** Ask the agent to clone a repository into the VM (routed through the conductor). */
-  | { type: "add_repo"; url: string; name?: string; threadId?: string };
+  | { type: "add_repo"; url: string; name?: string; threadId?: string }
+  /** Structured slash command (Feature 2): `{command:"/email", args:{to,subject,body}}`. */
+  | {
+      type: "slash";
+      threadId?: string;
+      command: string;
+      args?: Record<string, unknown>;
+      /** Admin token for restricted slash commands (e.g. /email). */
+      adminToken?: string;
+    };
 
 // ---------------------------------------------------------------------------
 // Server → Client
@@ -155,6 +271,15 @@ export type ServerMessage =
   | { type: "question"; threadId: string; questionId: string; prompt: string; options?: string[] }
   | { type: "plan_ready"; threadId: string; planMarkdown: string }
   | { type: "repos_updated"; repos: RepoStatus[] }
+  /** Result of a prompt thread's webhook delivery (Feature 3). */
+  | {
+      type: "prompt_thread_result";
+      threadId: string;
+      status: "success" | "error" | "skipped";
+      response?: string;
+    }
+  /** Ack/result of a structured `/email` slash command (Feature 2). */
+  | { type: "slash_result"; ok: boolean; message: string }
   | { type: "error"; threadId?: string; message: string };
 
 // ---------------------------------------------------------------------------

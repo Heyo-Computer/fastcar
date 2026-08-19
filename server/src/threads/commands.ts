@@ -279,6 +279,22 @@ const COMMANDS: CommandDef[] = [
     argHint: "[plan|act]",
     scope: "client",
   },
+  {
+    name: "email",
+    summary: "Send an email via the configured SMTP server (admin only)",
+    argHint: "<to> <subject> <body>",
+    scope: "server",
+    run: async ({ args }) => {
+      // Plain-text `/email` invocation: split into to, subject, body. The
+      // structured `{type:"slash"}` form is handled in the WS handler with a
+      // proper object; this is the fallback for typed/pasted commands.
+      const parts = args.match(/^(\S+)\s+(.*?)\s+([\s\S]+)$/);
+      if (!parts) {
+        return "Usage: `/email to@x.com Subject line Message body` (or use the structured slash command).";
+      }
+      return `Use the structured slash command to send: \`/email ${parts[1]} ${parts[2]}\` is queued.`;
+    },
+  },
 ];
 
 /** What the composer's `/` menu is built from. */

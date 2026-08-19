@@ -22,7 +22,8 @@
     "smoke": "cd server && npm run smoke",
     "smoke:ws": "cd server && npm run smoke:ws",
     "smoke:git": "cd server && npm run smoke:git",
-    "start": "cd server && npm run start"
+    "start": "cd server && npm run start",
+    "test": "cd server && npm run test"
   },
   "engines": {
     "node": ">=22.19.0"

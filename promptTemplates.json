@@ -1,0 +1,32 @@
+[
+  {
+    "id": "summarize",
+    "description": "Summarize a block of text into a concise paragraph.",
+    "promptText": "Summarize the following text into a concise paragraph (3-5 sentences), capturing the key points:\n\n{{text}}",
+    "variables": ["text"]
+  },
+  {
+    "id": "classify",
+    "description": "Classify a message into a sentiment label.",
+    "promptText": "Classify the sentiment of the following message as positive, negative, or neutral. Reply with a single word.\n\n{{message}}",
+    "variables": ["message"]
+  },
+  {
+    "id": "translate",
+    "description": "Translate text into a target language.",
+    "promptText": "Translate the following text into {{language}}. Reply with the translation only.\n\n{{text}}",
+    "variables": ["text", "language"]
+  },
+  {
+    "id": "extract-todos",
+    "description": "Extract a bullet list of action items from notes.",
+    "promptText": "Extract every action item and TODO from the following notes as a markdown bullet list. If there are none, reply with \"No action items found.\"\n\n{{notes}}",
+    "variables": ["notes"]
+  },
+  {
+    "id": "default",
+    "description": "Run a free-form prompt through the LLM and post the result.",
+    "promptText": "{{prompt}}",
+    "variables": ["prompt"]
+  }
+]
