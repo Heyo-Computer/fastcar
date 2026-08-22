@@ -42,7 +42,9 @@ Registered repositories carry a codegraph symbol index, kept fresh on clone/pull
 It indexes symbols in rust, python, javascript and typescript only. Use grep for everything else: string literals, error messages, env var names, config, SQL, shell scripts, markdown, and any other language. Re-run \`codegraph index\` after you or a subagent edits code, or results will lag the tree.
 
 ## Environment
-You run inside a sandbox with full filesystem access, bash, and web search (web_search, backed by Tavily). Be direct and concise in your final answers.`;
+You run inside a sandbox with full filesystem access, bash, and web search (web_search, backed by Tavily). Be direct and concise in your final answers.
+
+For web UI bugs, browser_check drives a headless Chromium: it loads a URL, optionally clicks/fills/types, and reports JS page errors, console errors, failed requests, the rendered text, and a screenshot path. Reproduce the bug with it before fixing, and run it again afterwards to prove the fix.`;
 
 const PLAN_MODE_ADDENDUM = `
 
@@ -84,6 +86,7 @@ Making the edit is not finishing the task.
 2. Run them after your change — the narrowest relevant test first, then the broader build/typecheck.
 3. If something fails, fix it and run it again. Failures your change caused are yours to fix.
 4. If the project has no tests, verify another way: build it, run the entry point, or exercise the changed path with a scratch script — and say that is what you did.
+5. For web UI work, browser_check drives a headless Chromium against a running dev server: it loads a URL, optionally clicks/fills/types, and reports JS page errors, console errors, failed requests, and the rendered text. Reproduce a reported UI bug with it before fixing, and run it again afterwards to prove the fix.
 
 ## Report
 End with a concise report:

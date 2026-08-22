@@ -9,6 +9,7 @@ import {
 import type { StreamEvent, UsageSummary } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
+import { createBrowserCheckTool } from "../tools/browserCheck.js";
 import { createGitTools, GIT_TOOL_NAMES } from "../tools/git.js";
 import { translateSessionEvent, extractText, extractUsage } from "./events.js";
 import { MAXCODING_PROMPT, MINIMODEL_PROMPT } from "./prompts.js";
@@ -55,7 +56,7 @@ const SUBAGENT_TOOLS: Record<SubagentKind, string[]> = {
   // maxcoding gets git except clone and purge — the repository registry's
   // lifecycle stays with the conductor, which can ask the user about it.
   maxcoding: [
-    "read", "bash", "edit", "write", "grep", "find", "ls", "web_search",
+    "read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "browser_check",
     ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone" && n !== "git_purge"),
   ],
   minimodel: ["read", "grep", "find", "ls", "web_search", "git_status", "git_list_repos"],
@@ -175,7 +176,11 @@ export class SubagentManager {
       model: this.models[kind],
       thinkingLevel: "off",
       tools: SUBAGENT_TOOLS[kind],
-      customTools: [createWebSearchTool(this.cfg), ...createGitTools(this.cfg)],
+      customTools: [
+        createWebSearchTool(this.cfg),
+        createBrowserCheckTool(this.cfg),
+        ...createGitTools(this.cfg),
+      ],
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(this.cfg.workdir),
       settingsManager: SettingsManager.inMemory(),

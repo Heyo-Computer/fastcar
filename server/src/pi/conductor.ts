@@ -15,6 +15,7 @@ import { createMemoryTools } from "../tools/memory.js";
 import { createRunSubagentTool, type SubagentEventSink } from "../tools/runSubagent.js";
 import { createSubmitPlanTool, type SubmitPlanBridge } from "../tools/submitPlan.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
+import { createBrowserCheckTool } from "../tools/browserCheck.js";
 import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
 import type { EmailService } from "../services/emailService.js";
 import { conductorPrompt } from "./prompts.js";
@@ -91,7 +92,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       "read", "bash", "edit", "write", "grep", "find", "ls",
       "run_subagent", "ask_user", "submit_plan",
       "memory_save", "memory_search", "memory_list", "memory_delete",
-      "web_search", ...emailNames,
+      "web_search", "browser_check", ...emailNames,
       ...GIT_TOOL_NAMES,
     ],
     customTools: [
@@ -100,6 +101,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       createSubmitPlanTool(deps.planBridge),
       ...createMemoryTools(threadId),
       createWebSearchTool(cfg),
+      createBrowserCheckTool(cfg),
       ...emailTool,
       ...createGitTools(cfg),
     ],

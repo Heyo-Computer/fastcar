@@ -119,10 +119,20 @@ FROM node:22-bookworm-slim
 #   git             — the whole point of the repos integration
 #   postgresql      — local DB, data dir on /workspace (survives cold boots)
 #   curl            — start.sh/preflight health probes
+#   chromium        — headless browser behind the agents' browser_check tool
+#                     (tools/browserCheck.ts drives it via playwright-core, no
+#                     runtime download). fonts-liberation keeps its screenshots
+#                     from rendering as tofu. This is the heaviest line here
+#                     (~250 MB installed, ~2s of cold-boot copy at the measured
+#                     ~130 MB/s) — drop it first if the rootfs ever pushes the
+#                     30s sandbox-deploy budget; browser_check degrades to a
+#                     clear "no Chromium found" tool error without it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        chromium \
         curl \
         e2fsprogs \
+        fonts-liberation \
         git \
         iproute2 \
         openssh-server \
@@ -178,6 +188,7 @@ RUN test -x /init.sh \
     && node --version \
     && git --version \
     && codegraph --version \
+    && chromium --version \
     && ls /usr/lib/postgresql/*/bin/initdb \
     && node_modules/.bin/tsx --version \
     && test -f web/dist/index.html \

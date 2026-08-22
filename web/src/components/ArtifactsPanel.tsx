@@ -8,7 +8,9 @@ import { useStore } from "../state/store.ts";
  * opens a modal for file upload or markdown entry and parent selection.
  */
 export function ArtifactsPanel({ threadId }: { threadId: string }) {
-  const tree = useStore((s) => s.artifactTrees[threadId] ?? []);
+  // Default outside the selector: `?? []` inside returns a fresh array every
+  // snapshot for threads with no artifacts yet, which loops useSyncExternalStore.
+  const tree = useStore((s) => s.artifactTrees[threadId]) ?? [];
   const loadArtifacts = useStore((s) => s.loadArtifacts);
   const setModal = useStore((s) => s.setModal);
 

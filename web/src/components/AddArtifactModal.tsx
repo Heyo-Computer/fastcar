@@ -9,7 +9,8 @@ import { useStore } from "../state/store.ts";
  */
 export function AddArtifactModal({ threadId }: { threadId: string }) {
   const setModal = useStore((s) => s.setModal);
-  const tree = useStore((s) => s.artifactTrees[threadId] ?? []);
+  // Default outside the selector — see ArtifactsPanel; an inline `?? []` loops the render.
+  const tree = useStore((s) => s.artifactTrees[threadId]) ?? [];
   const loadArtifacts = useStore((s) => s.loadArtifacts);
 
   const [mode, setMode] = useState<"markdown" | "file">("markdown");
