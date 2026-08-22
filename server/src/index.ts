@@ -13,6 +13,7 @@ import { buildModels } from "./pi/runtime.js";
 import { SubagentManager } from "./pi/subagents.js";
 import { ThreadManager } from "./threads/manager.js";
 import { registerRoutes } from "./http/routes.js";
+import { registerPublicArtifactRoutes } from "./http/publicArtifacts.js";
 import { registerWs } from "./ws/handler.js";
 import { ArtifactService } from "./services/artifacts.js";
 import { EmailService } from "./services/emailService.js";
@@ -29,13 +30,15 @@ const models = await buildModels(cfg);
 const subagents = new SubagentManager(models, cfg);
 const artifacts = new ArtifactService(cfg);
 const email = new EmailService(cfg);
-const manager = new ThreadManager(cfg, models, subagents, email);
+const manager = new ThreadManager(cfg, models, subagents, email, artifacts);
 
 const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);
 await app.register(fastifyMultipart);
 
 registerRoutes(app, cfg, { artifacts, email });
+// Public, unauthenticated artifact pages (see deploy/fastcar.json auth.public_paths).
+registerPublicArtifactRoutes(app, artifacts);
 registerWs(app, manager, cfg);
 
 // Serve the built web UI in production (web/dist); Vite dev server proxies to us in dev.
@@ -43,7 +46,7 @@ const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.
 if (fs.existsSync(webDist)) {
   await app.register(fastifyStatic, { root: webDist });
   app.setNotFoundHandler((req, reply) => {
-    if (req.raw.url?.startsWith("/api") || req.raw.url?.startsWith("/ws")) {
+    if (req.raw.url?.startsWith("/api") || req.raw.url?.startsWith("/ws") || req.raw.url?.startsWith("/artifacts/")) {
       return reply.code(404).send({ error: "not found" });
     }
     return reply.sendFile("index.html");

@@ -45,6 +45,8 @@ export interface PromptThreadConfig {
 // ---------------------------------------------------------------------------
 
 export interface Artifact {
+  /** Public (unauthenticated) URL where the artifact is served: /artifacts/<id>/<name>. */
+  publicUrl: string;
   id: string;
   threadId: string;
   /** UUID of the parent artifact, or null at the root of the thread's tree. */
@@ -271,6 +273,8 @@ export type ServerMessage =
   | { type: "question"; threadId: string; questionId: string; prompt: string; options?: string[] }
   | { type: "plan_ready"; threadId: string; planMarkdown: string }
   | { type: "repos_updated"; repos: RepoStatus[] }
+  /** An artifact on the thread was created, updated or deleted (e.g. by the agent). */
+  | { type: "artifacts_updated"; threadId: string }
   /** Result of a prompt thread's webhook delivery (Feature 3). */
   | {
       type: "prompt_thread_result";

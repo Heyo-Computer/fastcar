@@ -26,6 +26,7 @@ function tempConfig(dataDir: string): Config {
     inceptionBaseUrl: "",
     adminToken: undefined,
     defaultOwner: null,
+    publicUrl: "http://public.test",
   };
 }
 

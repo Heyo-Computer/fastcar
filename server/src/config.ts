@@ -23,6 +23,12 @@ export interface Config {
   adminToken: string | undefined;
   /** Whose identity new threads/artifacts are owned by when no caller is identified. */
   defaultOwner: string | null;
+  /**
+   * Origin (scheme + host, no trailing slash) at which this server is reachable
+   * from the outside — used to build the public artifact URLs handed to agents
+   * and the UI. Defaults to http://localhost:<port>.
+   */
+  publicUrl: string;
 }
 
 /**
@@ -62,8 +68,9 @@ export function loadConfig(): Config {
   const sessionDir = path.join(dataDir, "sessions");
   fs.mkdirSync(sessionDir, { recursive: true });
 
+  const port = Number(env("PORT") ?? 3000);
   return {
-    port: Number(env("PORT") ?? 3000),
+    port,
     databaseUrl,
     mock,
     mockPort,
@@ -85,5 +92,6 @@ export function loadConfig(): Config {
       : "https://api.inceptionlabs.ai/v1",
     adminToken: env("FASTCAR_ADMIN_TOKEN"),
     defaultOwner: env("FASTCAR_DEFAULT_OWNER") ?? null,
+    publicUrl: (env("FASTCAR_PUBLIC_URL") ?? `http://localhost:${port}`).replace(/\/+$/, ""),
   };
 }

@@ -1,8 +1,24 @@
 {
   "id": "fastcar",
   "routes": [
-    { "host": "fastcar.example.com" }
+    {
+      "host": "fastcar.example.com"
+    }
   ],
+  "auth": {
+    "client_id": "REPLACE_ME_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "client_secret": {
+      "secret": "google",
+      "key": "client_secret"
+    },
+    "allowed_domains": [
+      "REPLACE_ME_WORKSPACE_DOMAIN"
+    ],
+    "public_paths": [
+      "/api/health",
+      "/artifacts/"
+    ]
+  },
   "vm": {
     "driver": "firecracker",
     "image": "fastcar",
@@ -20,6 +36,7 @@
       "TRANSCRIBE_MODEL": "openai/whisper-large-v3",
       "DATABASE_URL": "postgres://fastcar:fastcar@127.0.0.1:5432/fastcar",
       "PORT": "3000",
+      "FASTCAR_PUBLIC_URL": "https://fastcar.example.com",
       "FASTCAR_WORKDIR": "/workspace",
       "FASTCAR_DATA_DIR": "/workspace/fastcar",
       "FASTCAR_REPOS_DIR": "/workspace/repos",

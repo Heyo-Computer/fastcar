@@ -14,7 +14,8 @@ interface ArtifactRow {
   updated_at: Date;
 }
 
-export interface ArtifactRecord extends Artifact {
+/** DB row view; the public URL is derived by ArtifactService, not stored. */
+export interface ArtifactRecord extends Omit<Artifact, "publicUrl"> {
   storagePath: string;
 }
 
@@ -64,6 +65,14 @@ export async function listArtifactsForThread(threadId: string): Promise<Artifact
     [threadId],
   );
   return rows.map(toRecord);
+}
+
+export async function touchArtifact(id: string, size: number): Promise<ArtifactRecord | null> {
+  const { rows } = await getPool().query<ArtifactRow>(
+    "UPDATE artifacts SET size = $2, updated_at = now() WHERE id = $1 RETURNING *",
+    [id, size],
+  );
+  return rows[0] ? toRecord(rows[0]) : null;
 }
 
 export async function deleteArtifactRow(id: string): Promise<boolean> {

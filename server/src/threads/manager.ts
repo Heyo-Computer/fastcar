@@ -25,6 +25,7 @@ import { getPromptTemplate, resolveTemplate } from "../services/promptTemplates.
 import { RateLimiter, postToWebhook, validateWebhookUrl } from "../services/webhook.js";
 import { WebhookTokenStore } from "../services/webhookTokens.js";
 import type { EmailService } from "../services/emailService.js";
+import { artifactEvents, type ArtifactService } from "../services/artifacts.js";
 import { findCommand, parseCommandLine, runCommand } from "./commands.js";
 
 type Broadcast = (msg: ServerMessage) => void;
@@ -73,9 +74,11 @@ export class ThreadManager {
     private readonly models: FastcarModels,
     private readonly subagents: SubagentManager,
     private readonly email?: EmailService,
+    private readonly artifacts?: ArtifactService,
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
     gitEvents.on("changed", () => void this.broadcastRepos());
+    artifactEvents.on("changed", (threadId) => this.broadcast({ type: "artifacts_updated", threadId }));
   }
 
   async broadcastRepos(): Promise<void> {
@@ -655,6 +658,7 @@ export class ThreadManager {
         },
         onSubagentEvent: (kind, taskId, ev) => this.onSubagentEvent(rt, kind, taskId, ev),
         email: this.email,
+        artifacts: this.artifacts,
         sessionFile: rec?.piSessionFile ?? null,
       });
 

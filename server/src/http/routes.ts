@@ -187,6 +187,7 @@ export function registerRoutes(
         updatedAt: rec.updatedAt,
         content,
         storagePath: rec.storagePath,
+        publicUrl: deps.artifacts.publicUrl(rec),
       };
       return response;
     },

@@ -64,14 +64,21 @@ function ArtifactRow({ node, depth }: { node: ArtifactNode; depth: number }) {
         </button>
         <span className="shrink-0 text-[0.7rem]">{iconFor(node.contentType)}</span>
         <a
-          href={`/api/artifacts/${node.id}`}
+          href={node.publicUrl}
           target="_blank"
           rel="noreferrer"
-          title={`${node.contentType} · ${formatSize(node.size)}`}
+          title={`${node.contentType} · ${formatSize(node.size)} · public link`}
           className="truncate text-ink hover:text-accent"
         >
           {node.name}
         </a>
+        <button
+          onClick={() => void navigator.clipboard?.writeText(node.publicUrl)}
+          title="Copy public link"
+          className="hidden shrink-0 text-[0.66rem] text-ink-faint hover:text-accent group-hover:inline"
+        >
+          ⧉
+        </button>
         <span className="ml-auto shrink-0 font-mono text-[0.66rem] text-ink-faint">
           {formatSize(node.size)}
         </span>

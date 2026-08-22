@@ -6,6 +6,9 @@ import path from "node:path";
 import Fastify from "fastify";
 import fastifyMultipart from "@fastify/multipart";
 import { registerRoutes } from "../http/routes.js";
+import { registerPublicArtifactRoutes } from "../http/publicArtifacts.js";
+import { artifactEvents } from "../services/artifacts.js";
+import { createArtifactTools } from "../tools/artifacts.js";
 import { callerFromRequest } from "../http/auth.js";
 import { ArtifactService } from "../services/artifacts.js";
 import { EmailService } from "../services/emailService.js";
@@ -40,6 +43,7 @@ function tempConfig(dataDir: string): Config {
     inceptionBaseUrl: "",
     adminToken: undefined,
     defaultOwner: null,
+    publicUrl: "http://public.test",
   };
 }
 
@@ -47,6 +51,7 @@ async function makeApp(cfg: Config, deps: { artifacts: ArtifactService; email: E
   const app = Fastify();
   await app.register(fastifyMultipart);
   registerRoutes(app, cfg, deps);
+  registerPublicArtifactRoutes(app, deps.artifacts);
   await app.ready();
   return app;
 }
@@ -182,6 +187,70 @@ describe("artifacts REST + auth", () => {
     } finally {
       await secureApp.close();
       fs.rmSync(secureTmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes a public URL on every artifact record", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/artifacts/${subId}` });
+    const body = res.json() as { publicUrl: string };
+    assert.equal(body.publicUrl, `http://public.test/artifacts/${subId}/sub.md`);
+  });
+
+  it("serves markdown rendered as HTML on the public path, raw with ?raw=1", async () => {
+    const rendered = await app.inject({ method: "GET", url: `/artifacts/${childId}/notes.md` });
+    assert.equal(rendered.statusCode, 200, rendered.payload);
+    assert.match(rendered.headers["content-type"] as string, /^text\/html/);
+    assert.match(rendered.payload, /<h1>Notes<\/h1>/);
+    assert.match(rendered.payload, /<title>notes\.md<\/title>/);
+
+    const raw = await app.inject({ method: "GET", url: `/artifacts/${childId}?raw=1` });
+    assert.equal(raw.statusCode, 200);
+    assert.match(raw.headers["content-type"] as string, /^text\/markdown/);
+    assert.equal(raw.payload, "# Notes\nhello");
+
+    const missing = await app.inject({ method: "GET", url: "/artifacts/00000000-0000-0000-0000-000000000000" });
+    assert.equal(missing.statusCode, 404);
+    const garbage = await app.inject({ method: "GET", url: "/artifacts/not-a-uuid" });
+    assert.equal(garbage.statusCode, 404);
+  });
+
+  it("agent tools create, update and list artifacts with public URLs", async () => {
+    const changed: string[] = [];
+    const onChanged = (id: string) => changed.push(id);
+    artifactEvents.on("changed", onChanged);
+    try {
+      const [create, update, list] = createArtifactTools(artifacts, threadId);
+      const ctx = undefined as never;
+      const created = await create!.execute("c1", { name: "page.html", content: "<h1>Hi</h1><script>1</script>" }, undefined, undefined, ctx);
+      const d = created.details as { id: string; url: string; contentType: string };
+      assert.equal(d.contentType, "text/html");
+      assert.equal(d.url, `http://public.test/artifacts/${d.id}/page.html`);
+      assert.match((created.content[0] as { text: string }).text, /Public URL: http:\/\/public\.test/);
+
+      // HTML is served verbatim (scripts intact), inline, with nosniff.
+      const page = await app.inject({ method: "GET", url: `/artifacts/${d.id}/page.html` });
+      assert.equal(page.statusCode, 200);
+      assert.match(page.headers["content-type"] as string, /^text\/html/);
+      assert.equal(page.headers["x-content-type-options"], "nosniff");
+      assert.equal(page.payload, "<h1>Hi</h1><script>1</script>");
+
+      // update keeps the id + URL and replaces the bytes.
+      const updated = await update!.execute("u1", { id: d.id, content: "<h1>Bye</h1>" }, undefined, undefined, ctx);
+      assert.equal((updated.details as { url: string }).url, d.url);
+      const page2 = await app.inject({ method: "GET", url: `/artifacts/${d.id}` });
+      assert.equal(page2.payload, "<h1>Bye</h1>");
+      const meta = await app.inject({ method: "GET", url: `/api/artifacts/${d.id}` });
+      assert.equal((meta.json() as { size: number }).size, Buffer.byteLength("<h1>Bye</h1>"));
+
+      const missing = await update!.execute("u2", { id: "00000000-0000-0000-0000-000000000000", content: "x" }, undefined, undefined, ctx);
+      assert.equal((missing.details as { updated: boolean }).updated, false);
+
+      const listed = await list!.execute("l1", {}, undefined, undefined, ctx);
+      assert.match((listed.content[0] as { text: string }).text, new RegExp(`\\[${d.id}\\] page\\.html .*${d.url}`));
+
+      assert.deepEqual(changed, [threadId, threadId], "create + update each emit a change for the thread");
+    } finally {
+      artifactEvents.off("changed", onChanged);
     }
   });
 

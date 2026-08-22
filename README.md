@@ -145,6 +145,7 @@ recurses forever.
 | `FASTCAR_MOCK` | `1` = keyless mock mode | `0` |
 | `FASTCAR_ENV_FILE` | Explicit env file to load instead of `.env` | unset |
 | `PORT` | HTTP port | `3000` |
+| `FASTCAR_PUBLIC_URL` | Externally reachable origin; prefix of the public artifact URLs the agent hands out | `http://localhost:$PORT` |
 
 ## Using it
 
@@ -218,5 +219,12 @@ recurses forever.
   committed. Without the binary (a plain dev box) everything falls back to grep.
 - **Memories** are saved to Postgres by the agent (`memory_save` etc.) and
   injected into its system prompt on new sessions.
+- **Artifacts** — the agent publishes HTML pages and markdown documents with
+  `create_artifact` / `update_artifact` / `list_artifacts` (users can also add
+  them from the artifacts panel). Each one is served without authentication on
+  the canonical path `/artifacts/<id>/<name>` (markdown is rendered to HTML;
+  `?raw=1` returns the source), built into a full link from
+  `FASTCAR_PUBLIC_URL`. Behind app-lb, `deploy/fastcar.json` lists `/artifacts/`
+  in `auth.public_paths` so the links work for anyone who has them.
 - While the agent is running, sending a message **steers** it; ◼ Stop aborts
   (cascading into any running subagents).

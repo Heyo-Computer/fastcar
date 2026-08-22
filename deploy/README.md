@@ -36,6 +36,8 @@ which launches the server. Placeholders to replace before `serverctl apply`:
 | `OPENROUTER_API_KEY` | `REPLACE_ME_OPENROUTER_API_KEY` — subagents + transcription |
 | `TAVILY_API_KEY` | `REPLACE_ME_TAVILY_API_KEY` — web search |
 | `routes[0].host` | `fastcar.example.com` — the public hostname |
+| `FASTCAR_PUBLIC_URL` | `https://fastcar.example.com` — same host, with scheme; prefix of every public artifact URL |
+| `auth.client_id` / `auth.allowed_domains` | the Google sign-in gate (see below); `client_secret` is a serverctl secret named `google` |
 | `build.repo` | `https://github.com/REPLACE_ME_ORG/fastcar.git` — this repo's remote |
 
 Model slugs (`MAXCODING_MODEL`, `MINIMODEL_MODEL`, `TRANSCRIBE_MODEL`) ship
@@ -45,6 +47,24 @@ without editing the file:
 ```sh
 serverctl set env fastcar OPENROUTER_API_KEY=sk-or-...   # rebuilds the pool
 ```
+
+## Public artifacts
+
+Agents publish HTML/markdown artifacts on `/artifacts/<id>/<name>` — links
+meant to be opened by anyone without signing in. The app serves that prefix
+with no auth of its own (ids are UUIDs; the URL is the capability), so the
+only thing standing between a link and the world is app-lb's sign-in gate.
+The spec's `auth.public_paths` therefore lists `/artifacts/` (and
+`/api/health` for the pool's health checks) so the gate skips them; everything
+else, `/api/*` and the UI included, stays behind Google sign-in. If you manage
+the gate with `heyctl set auth` instead of the spec, add the same prefix:
+
+```sh
+heyctl set auth fastcar --public-path /api/health --public-path /artifacts/
+```
+
+`FASTCAR_PUBLIC_URL` must be the origin the browser uses (`https://` + the
+route host) — it is what the agent pastes into its answers.
 
 ## Building the rootfs on the server
 

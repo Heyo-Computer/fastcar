@@ -403,6 +403,9 @@ export const useStore = create<AppState>((set, get) => ({
       case "repos_updated":
         set({ repos: msg.repos });
         break;
+      case "artifacts_updated":
+        void get().loadArtifacts(msg.threadId);
+        break;
       case "thread_created": {
         const threads = [msg.thread, ...state.threads.filter((t) => t.id !== msg.thread.id)];
         const patch: Partial<AppState> = { threads };

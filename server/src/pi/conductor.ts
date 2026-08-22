@@ -17,6 +17,8 @@ import { createSubmitPlanTool, type SubmitPlanBridge } from "../tools/submitPlan
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createBrowserCheckTool } from "../tools/browserCheck.js";
 import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
+import { ARTIFACT_MUTATING_TOOLS, ARTIFACT_TOOL_NAMES, createArtifactTools } from "../tools/artifacts.js";
+import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import { conductorPrompt } from "./prompts.js";
 import type { FastcarModels } from "./runtime.js";
@@ -30,6 +32,7 @@ const MUTATING_TOOLS = new Set([
   "run_subagent",
   "memory_delete",
   ...GIT_MUTATING_TOOLS,
+  ...ARTIFACT_MUTATING_TOOLS,
 ]);
 
 export interface ConductorDeps {
@@ -44,6 +47,8 @@ export interface ConductorDeps {
   onSubagentEvent: SubagentEventSink;
   /** Email service for the `email` agent tool (Feature 2). Optional in dev/smoke. */
   email?: EmailService;
+  /** Artifact store for the create/update/list_artifacts tools. Optional in dev/smoke. */
+  artifacts?: ArtifactService;
   /** Existing Pi JSONL session file to resume, or null for a fresh session. */
   sessionFile: string | null;
 }
@@ -79,6 +84,8 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
   // is wired in (the dev/smoke entry point runs without one).
   const emailTool = deps.email ? [createEmailTool(deps.email)] : [];
   const emailNames = deps.email ? ["email"] : [];
+  const artifactTools = deps.artifacts ? createArtifactTools(deps.artifacts, threadId) : [];
+  const artifactNames = deps.artifacts ? ARTIFACT_TOOL_NAMES : [];
 
   const { session } = await createAgentSession({
     cwd: cfg.workdir,
@@ -94,6 +101,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       "memory_save", "memory_search", "memory_list", "memory_delete",
       "web_search", "browser_check", ...emailNames,
       ...GIT_TOOL_NAMES,
+      ...artifactNames,
     ],
     customTools: [
       createRunSubagentTool(deps.subagents, deps.onSubagentEvent),
@@ -104,6 +112,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       createBrowserCheckTool(cfg),
       ...emailTool,
       ...createGitTools(cfg),
+      ...artifactTools,
     ],
     resourceLoader: loader,
     sessionManager,
