@@ -5,6 +5,8 @@ import type {
   ArtifactsTreeResponse,
   CommandsResponse,
   CreateArtifactResponse,
+  InstallMcpRequest,
+  McpServersResponse,
   MentionsResponse,
   PromptTemplatesResponse,
   SmtpSettingsRequest,
@@ -22,10 +24,12 @@ import { callerFromRequest } from "./auth.js";
 import { loadPromptTemplates } from "../services/promptTemplates.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
+import type { McpManager } from "../services/mcp.js";
 
 export interface RouteDeps {
   artifacts: ArtifactService;
   email: EmailService;
+  mcp?: McpManager;
 }
 
 export function registerRoutes(
@@ -53,6 +57,35 @@ export function registerRoutes(
   });
 
   app.get("/api/repos", async () => ({ repos: await collectRepoStatuses() }));
+
+  // ---------------------------------------------------------------- MCP servers
+  app.get("/api/mcp", async (): Promise<McpServersResponse> => ({
+    servers: deps.mcp ? await deps.mcp.statuses() : [],
+  }));
+
+  /** Install directly (the sidebar form); agents use the mcp_install tool instead. */
+  app.post<{ Body: InstallMcpRequest }>("/api/mcp", async (req, reply) => {
+    if (!deps.mcp) return reply.code(503).send({ error: "MCP is not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    const body = req.body ?? ({} as InstallMcpRequest);
+    if (!body.source?.trim()) return reply.code(400).send({ error: "source is required" });
+    try {
+      return { server: await deps.mcp.install(body) };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete<{ Params: { name: string } }>("/api/mcp/:name", async (req, reply) => {
+    if (!deps.mcp) return reply.code(503).send({ error: "MCP is not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      return await deps.mcp.remove(req.params.name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(message.startsWith("No MCP server") ? 404 : 400).send({ error: message });
+    }
+  });
 
   /**
    * Purge a repository: delete the clone and drop it from the registry.

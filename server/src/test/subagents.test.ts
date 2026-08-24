@@ -69,6 +69,29 @@ describe("subagent control (cancel + signal forwarding)", () => {
     });
   });
 
+  it("maxcoding mode=plan runs read-only and returns a plan with questions", async () => {
+    const toolsUsed = new Set<string>();
+    const { report } = await manager.run({
+      kind: "maxcoding" as SubagentKind,
+      mode: "plan",
+      task: "Write an implementation plan for a mock refactor.",
+      taskId: "test-plan-mode-task",
+      signal: undefined,
+      onEvent: (_kind, _taskId, ev) => {
+        if (ev.kind === "tool_start") toolsUsed.add(ev.name);
+      },
+    });
+
+    // The planning pool has no mutating tools at all, so even a model that
+    // wanted to edit could not — and the verification follow-up never fires.
+    for (const name of toolsUsed) {
+      assert.ok(!["bash", "edit", "write"].includes(name), `planning run used mutating tool ${name}`);
+    }
+    assert.ok(toolsUsed.size > 0, "planning run explored with read-only tools");
+    assert.match(report, /## Questions for the user/);
+    assert.doesNotMatch(report, /## Verification\n- `npm test` — passed \(mock/);
+  });
+
   it("a caller-supplied signal still propagates to the run", async () => {
     const external = new AbortController();
     const runPromise = manager.run({

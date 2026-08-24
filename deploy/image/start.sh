@@ -13,6 +13,13 @@ LOG=/workspace/log/fastcar.log
 PIDFILE=/workspace/fastcar.pid
 mkdir -p /workspace/log
 
+# With vm.workspace, /workspace is captured and rebuilt by app-lb as its own
+# user between VMs, so every file under it comes back owned by that uid. git
+# treats a repository owned by somebody else as suspect ("dubious ownership")
+# and refuses to touch it; the agent runs as root and the repos are its own,
+# so tell git so. Harmless on the plain data-disk layout.
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 # Paths default onto the data disk — the rootfs is discarded on cold boot.
 # Everything else (keys, model slugs, DATABASE_URL…) must come from the
 # deployment env; these fallbacks only pin state to /workspace.

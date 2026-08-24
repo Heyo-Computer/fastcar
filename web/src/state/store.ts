@@ -6,6 +6,7 @@ import type {
   PendingInteraction,
   PersistedEvent,
   PromptTemplate,
+  McpServerStatus,
   RepoStatus,
   ServerMessage,
   StreamEvent,
@@ -74,6 +75,7 @@ export interface AppState {
   /** Webhook delivery status for prompt threads (Feature 3). */
   promptStatus: Record<string, { status: string; response?: string }>;
   repos: RepoStatus[];
+  mcpServers: McpServerStatus[];
   /** Slash commands the server offers, for the composer's `/` menu. */
   commands: CommandSpec[];
   /** Predefined prompt templates (Feature 3). */
@@ -92,6 +94,7 @@ export interface AppState {
   selectThread(id: string | null): void;
   loadHistory(id: string): Promise<void>;
   loadRepos(): Promise<void>;
+  loadMcpServers(): Promise<void>;
   loadCommands(): Promise<void>;
   loadPromptTemplates(): Promise<void>;
   loadArtifacts(threadId: string): Promise<void>;
@@ -382,6 +385,7 @@ export const useStore = create<AppState>((set, get) => ({
   pending: {},
   promptStatus: {},
   repos: [],
+  mcpServers: [],
   commands: [],
   promptTemplates: [],
   artifactTrees: {},
@@ -399,9 +403,13 @@ export const useStore = create<AppState>((set, get) => ({
       case "hello":
         set({ threads: msg.threads });
         void get().loadRepos();
+        void get().loadMcpServers();
         break;
       case "repos_updated":
         set({ repos: msg.repos });
+        break;
+      case "mcp_servers_updated":
+        set({ mcpServers: msg.servers });
         break;
       case "artifacts_updated":
         void get().loadArtifacts(msg.threadId);
@@ -515,6 +523,13 @@ export const useStore = create<AppState>((set, get) => ({
     if (!res.ok) return;
     const data = (await res.json()) as { repos: RepoStatus[] };
     set({ repos: data.repos });
+  },
+
+  loadMcpServers: async () => {
+    const res = await fetch("/api/mcp");
+    if (!res.ok) return;
+    const data = (await res.json()) as { servers: McpServerStatus[] };
+    set({ mcpServers: data.servers });
   },
 
   loadCommands: async () => {

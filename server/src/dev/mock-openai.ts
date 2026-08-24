@@ -12,7 +12,13 @@ import { getAgent } from "../pi/agentsConfig.js";
  *  - maxcoding subagent          -> a `bash` call and a report with no
  *    verification, so the harness's verification follow-up fires; the reminder
  *    is answered with a "## Verification" section
- *  - planning-mode system prompt -> submit_plan call (if offered)
+ *  - planning-mode system prompt -> submit_plan call (if offered); if the
+ *    prompt contains "delegate", a read-only run_subagent(maxcoding,
+ *    mode=plan) call goes out first and submit_plan follows its result
+ *  - maxcoding plan-writing subagent -> one `ls` call, then a plan with a
+ *    "## Questions for the user" section
+ *  - "install the mcp server <source>" -> mcp_install(source) (if offered)
+ *  - "call the mcp echo tool"          -> mcp_call(mcp-echo, echo) (if offered)
  * Also implements POST .../audio/transcriptions with a canned transcript.
  */
 
@@ -66,12 +72,39 @@ function decideReply(req: ChatRequest): Reply {
     };
   }
 
-  // After any tool result, wrap up with text (keeps the loop short and predictable).
-  if (lastMessage?.role === "tool") {
-    return { kind: "text", text: "Mock run complete. I inspected the workspace and finished the task." };
+  // The plan-writing maxcoding run: explore once, then return a plan that
+  // carries questions for the conductor to relay.
+  if (systemText.includes("plan-writing run") && hadToolResult) {
+    return {
+      kind: "text",
+      text: [
+        "## Context\nMock exploration of the workspace.",
+        "## Approach\nMake the change in the smallest reviewable steps.",
+        "## Steps\n1. Inspect the repository.\n2. Make the change.\n3. Add a test.",
+        "## Verification\n- `npm test`\n- `npm run typecheck`",
+        "## Risks\nNone beyond the usual.",
+        "## Questions for the user\n- Mock question: should the old behaviour stay behind a flag?",
+      ].join("\n\n"),
+    };
   }
 
-  if (systemText.includes("PLANNING MODE") && toolNames.has("submit_plan")) {
+  const planAlreadySubmitted = req.messages.some(
+    (m) => m.role === "assistant" && JSON.stringify(m.tool_calls ?? []).includes("submit_plan"),
+  );
+  if (systemText.includes("PLANNING MODE") && toolNames.has("submit_plan") && !planAlreadySubmitted) {
+    // A planning thread that asks for delegation fans the plan-writing out to a
+    // read-only maxcoding run first; the gate in conductor.ts must let it through.
+    if (userText.includes("delegate") && !hadToolResult && toolNames.has("run_subagent")) {
+      return {
+        kind: "tool",
+        name: "run_subagent",
+        args: {
+          agent: getAgent("coding"),
+          mode: "plan",
+          task: "Write an implementation plan for the requested refactor.",
+        },
+      };
+    }
     return {
       kind: "tool",
       name: "submit_plan",
@@ -79,6 +112,11 @@ function decideReply(req: ChatRequest): Reply {
         plan: "# Mock Plan\n\n1. Inspect the repository.\n2. Make the change.\n3. Verify with tests.",
       },
     };
+  }
+
+  // After any tool result, wrap up with text (keeps the loop short and predictable).
+  if (lastMessage?.role === "tool") {
+    return { kind: "text", text: "Mock run complete. I inspected the workspace and finished the task." };
   }
   if (userText.includes("ask") && toolNames.has("ask_user")) {
     return {
@@ -114,6 +152,21 @@ function decideReply(req: ChatRequest): Reply {
       kind: "tool",
       name: "memory_save",
       args: { content: "Mock memory: the user likes concise answers.", tags: ["mock"] },
+    };
+  }
+  const mcpMatch = /[Ii]nstall the mcp server (\S+)/.exec(rawUserText);
+  if (mcpMatch && toolNames.has("mcp_install")) {
+    return {
+      kind: "tool",
+      name: "mcp_install",
+      args: { source: mcpMatch[1], name: "mcp-echo", subpath: "mcp", env: { ECHO_GREETING: "hi" } },
+    };
+  }
+  if (userText.includes("call the mcp echo tool") && toolNames.has("mcp_call")) {
+    return {
+      kind: "tool",
+      name: "mcp_call",
+      args: { server: "mcp-echo", tool: "echo", arguments: { text: "echo from mock" } },
     };
   }
   // Match against the raw (case-preserving) text — URLs and paths are case-sensitive.

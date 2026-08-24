@@ -140,6 +140,8 @@ recurses forever.
 | `TAVILY_API_KEY` | Web search | optional |
 | `FASTCAR_WORKDIR` | Directory the agents operate on | process cwd |
 | `FASTCAR_REPOS_DIR` | Where cloned repositories live | `<workdir>/repos` |
+| `FASTCAR_MCP_DIR` | Where installed MCP servers are cloned and built | `<data dir>/mcp` |
+| `FASTCAR_SECRET` | Key for secrets stored at rest (SMTP password, MCP env/headers) | derived from the data dir path |
 | `FASTCAR_GIT_NAME` / `FASTCAR_GIT_EMAIL` | Commit identity if the VM has no global git config | unset |
 | `FASTCAR_DATA_DIR` | App state (Pi auth/models/sessions) — keep outside the workdir | `./.fastcar` |
 | `FASTCAR_MOCK` | `1` = keyless mock mode | `0` |
@@ -162,7 +164,7 @@ recurses forever.
 - **Slash commands**: type `/` at the start of a message for the command menu
   (↑↓ to move, ⏎/⇥ to pick, esc to dismiss). Commands never reach the model —
   they render into the thread as app output: `/help`, `/context` (context
-  window, tokens, cost), `/compact [focus]`, `/repos`, `/purge [repo]`,
+  window, tokens, cost), `/compact [focus]`, `/repos`, `/purge [repo]`, `/mcp`,
   `/memories [query]`, `/agents`, `/tools`, `/rename <title>`, `/plan`, `/act`,
   `/new [plan]`. The registry in
   `server/src/threads/commands.ts` is the single source of truth: the menu is
@@ -176,14 +178,24 @@ recurses forever.
   inlined.
 - **Planning mode**: the agent explores read-only (mutating tools are blocked
   per-call), may ask questions, then submits a plan. Approve to execute
-  (thread flips to act mode); request changes to get a revision.
+  (thread flips to act mode); request changes to get a revision. Read-only
+  subagents are allowed here and can run in parallel: **minimodel** for
+  exploration, and **maxcoding** with `mode: "plan"` to write the plan itself
+  for complex tasks — it returns a plan plus a `## Questions for the user`
+  section, which the conductor relays through `ask_user` before submitting.
+  Implementing subagents stay blocked until the plan is approved.
 - **Questions**: when the agent calls `ask_user`, the thread pauses until you
   answer in the question card.
 - **Subagents** appear nested inside the `run_subagent` tool card with live
   activity; the conductor receives their final reports. The conductor is told to
   delegate by default: anything beyond a one-line code change goes to
   **maxcoding**, unfamiliar-code exploration goes to **minimodel**, and
-  independent tasks go out in parallel.
+  independent tasks go out in parallel. Complex tasks are planned first: a
+  `mode: "plan"` maxcoding run (read-only, its own concurrency pool) explores
+  and writes the plan and the questions only the user can answer; an
+  implementing run may likewise stop *before changing anything* to return
+  `## Questions for the user`. The conductor asks them via `ask_user` and
+  re-dispatches with the answers.
 - **Verification** is enforced, not merely requested. maxcoding owns its VM and
   installs whatever a task needs, then runs the project's tests/build/typecheck
   and reports a `## Verification` section with the commands it ran. If it
@@ -198,6 +210,19 @@ recurses forever.
   auth uses whatever the VM has (ssh keys, credential helper, or a token
   embedded in an https URL — prompts are disabled so bad auth fails fast instead
   of hanging).
+- **MCP servers**: the agent can install a [Model Context Protocol](https://modelcontextprotocol.io)
+  server from a GitHub URL — e.g. `https://github.com/Heyo-Computer/heyo-public/tree/main/mcp`
+  (branch and subdirectory are read from the URL), any git URL, or a remote
+  http endpoint — and call its tools. Tools: `mcp_install` (clone, `npm install`,
+  `npm run build`, entry point from `package.json`; pass `command`/`args` for
+  non-Node servers and `env` for the configuration its README asks for),
+  `mcp_list_servers`, `mcp_list_tools` (argument schemas), `mcp_call`,
+  `mcp_remove`. Servers run over stdio on demand, restart if they die, and are
+  registered in Postgres so they survive restarts; env vars and headers are
+  encrypted at rest (`FASTCAR_SECRET`). The sidebar's MCP panel and `/mcp` show
+  what is installed (`GET/POST /api/mcp`, `DELETE /api/mcp/:name`). maxcoding
+  can call installed tools inside its tasks; in plan mode only tools the server
+  marks `readOnlyHint` may run. Installs live in `FASTCAR_MCP_DIR`.
 - **Purging old repos**: hover a repo for `×` (confirm, then delete), or use
   `/purge` — with no argument it lists repositories oldest-commit-first so stale
   clones are easy to spot, and `/purge <name>` removes one. A purge deletes the

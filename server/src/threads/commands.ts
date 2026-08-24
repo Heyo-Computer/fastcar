@@ -15,6 +15,7 @@ import type { Config } from "../config.js";
 import { listMemories, searchMemories } from "../db/memories.js";
 import { listAgents } from "../pi/agentsConfig.js";
 import { collectRepoStatuses, purgeRepo, PurgeRefusedError } from "../services/git.js";
+import type { McpManager } from "../services/mcp.js";
 
 export interface CommandContext {
   cfg: Config;
@@ -27,6 +28,8 @@ export interface CommandContext {
   setMode: (mode: ThreadMode) => Promise<void>;
   /** Rename this thread; resolves with the cleaned-up title. */
   rename: (title: string) => Promise<string>;
+  /** MCP registry, when the server runs with one. */
+  mcp?: McpManager;
 }
 
 interface CommandDef extends CommandSpec {
@@ -157,6 +160,24 @@ const COMMANDS: CommandDef[] = [
         return `- **${r.name}** \`${r.branch ?? "?"}\` — \`${r.path}\`${flags.length ? ` · ${flags.join(" · ")}` : ""}`;
       });
       return ["### Repositories", ...lines, "", "Free space with `/purge <name>`."].join("\n");
+    },
+  },
+  {
+    name: "mcp",
+    summary: "Installed MCP servers and their tools",
+    scope: "server",
+    run: async ({ mcp }) => {
+      if (!mcp) return "MCP is not enabled on this server.";
+      const servers = await mcp.statuses();
+      if (!servers.length) {
+        return "No MCP servers installed — ask the agent to install one from a GitHub URL, or add it from the sidebar.";
+      }
+      const lines = servers.map((s) => {
+        const state = s.status === "connected" ? "connected" : `**${s.status}**${s.error ? ` — ${truncate(s.error, 160)}` : ""}`;
+        const tools = s.tools.map((t) => `\`${t.name}\``).join(" · ") || "_no tools advertised_";
+        return `- **${s.name}** (${s.transport}, ${state})\n  ${tools}`;
+      });
+      return ["### MCP servers", ...lines].join("\n");
     },
   },
   {

@@ -1,0 +1,7 @@
+{
+  "name": "mcp-echo",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": { "mcp-echo": "./server.js" }
+}

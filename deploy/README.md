@@ -16,7 +16,7 @@ serverctl exec fastcar -- /opt/fastcar/preflight.sh
 | --- | --- |
 | `image/Dockerfile` | The rootfs: Node 22 + Postgres + git + codegraph + the built app at `/opt/fastcar` |
 | `image/Dockerfile.ruby` | Example *workspace* rootfs (not used by this deployment): Ubuntu 24.04 x86_64, Ruby 4.0.5 + Node 26.2.0 via mise, Postgres 16 + Redis in-guest, the native image/PDF toolchain, and `devservices` / `project-setup` for per-spawn bring-up of a Rails + Vite checkout |
-| `image/init.sh` | PID 1: mounts, network, sshd, data disk at `/workspace`, local Postgres |
+| `image/init.sh` | PID 1: mounts, network, sshd, `/workspace` (data disk, or left to heyvmd for a managed workspace), local Postgres |
 | `image/start.sh` | `vm.start_command` — the only place the app's env is read |
 | `image/preflight.sh` | In-guest checks, run over `serverctl exec` |
 | `image/resolv.conf` | Guest resolver, staged and copied at boot |
@@ -39,6 +39,8 @@ which launches the server. Placeholders to replace before `serverctl apply`:
 | `FASTCAR_PUBLIC_URL` | `https://fastcar.example.com` — same host, with scheme; prefix of every public artifact URL |
 | `auth.client_id` / `auth.allowed_domains` | the Google sign-in gate (see below); `client_secret` is a serverctl secret named `google` |
 | `build.repo` | `https://github.com/REPLACE_ME_ORG/fastcar.git` — this repo's remote |
+| `DATABASE_URL` | `postgres://fastcar:REPLACE_ME_DB_PASSWORD@db.example.com:5432/fastcar` — a Postgres **outside** the VM (see "State lives in the workspace") |
+| `vm.workspace.store` | `https://REPLACE_ME_ARTIFACT_STORE` — the artifact store (or `s3://bucket/prefix`) that keeps `/workspace` snapshots; `auth` is a serverctl secret named `art` |
 
 Model slugs (`MAXCODING_MODEL`, `MINIMODEL_MODEL`, `TRANSCRIBE_MODEL`) ship
 with working defaults; change them in the same block. Rotate anything later
@@ -91,22 +93,64 @@ Notes:
   works and is what `vm.image` names until the first server-side build
   rewrites it.
 
-## State lives on the data disk
+## State lives in the workspace
 
 heyvm recopies the rootfs from the base image on **every cold boot** — writes
-to it do not survive. `vm.disk_size_gb` attaches a raw disk that `init.sh`
-formats on first boot and mounts at `/workspace`. Everything stateful is
-pinned there:
+to it do not survive. Everything stateful is pinned under `/workspace`:
 
-- Postgres cluster → `/workspace/pgdata` (threads, events, memories, repos registry)
 - Pi session JSONL + auth/models → `/workspace/fastcar`
+- Artifacts, browser-check screenshots, webhook tokens → `/workspace/fastcar/…`
 - Cloned git repositories → `/workspace/repos`
 - Logs → `/workspace/log` (`fastcar.log`, `postgres.log`)
 
-`idle_action: "retain"` in the scaling block stops idle VMs instead of
-destroying them, so `/workspace` also survives idling. `DATABASE_URL` defaults
-to the VM-local Postgres `init.sh` provisions; point it at an external server
-in `env_vars` and the local one just idles.
+There are two ways `/workspace` can be provided, and the spec picks one:
+
+### `vm.workspace` — owned by the deployment (the shipped spec)
+
+```json
+"disk_size_gb": 40,
+"workspace": {
+  "store": "https://art.example.com",
+  "ref": "fastcar-workspace",
+  "auth": { "secret": "art", "key": "api_key" }
+}
+```
+
+app-lb owns the directory. Every replica boots with `/workspace` seeded from
+the deployment's latest snapshot, and whenever a replica retires — a
+`serverctl build` rollout, `serverctl restart`, an edit to the spec, idling
+under `idle_action: retain`, a `serverctl delete` — app-lb stops it, extracts
+`/workspace`, and only then boots the replacement from the result. Each
+snapshot is also pushed to the artifact store (or an `s3://bucket/prefix`)
+under `ref`, so the workspace survives the host as well; a fresh host restores
+it on the first boot. `disk_size_gb` is the workspace's capacity.
+`serverctl describe fastcar` shows the snapshot in use, whether the store has
+it, and what — if anything — is holding the pool while a capture runs.
+
+Two things follow from how the capture works (app-lb rebuilds the tree as its
+own user, not root):
+
+- **Use an external `DATABASE_URL`.** File ownership does not survive a
+  capture, and Postgres refuses a data directory it does not own, so `init.sh`
+  does not start the in-guest cluster on a managed workspace. Point
+  `DATABASE_URL` at a server outside the VM (the template's `REPLACE_ME_DB_PASSWORD`
+  placeholder is for exactly that).
+- `start.sh` sets `git config --global safe.directory '*'`, because git
+  otherwise refuses repositories owned by another uid. Modes, symlinks and
+  mtimes are preserved.
+
+A rollout has a gap of drain + capture + boot — a minute or two for a few
+gigabytes of repositories — which is inherent to one directory with one
+writer; `max_replicas` must stay `1`.
+
+### `disk_size_gb` alone — a per-VM data disk
+
+Drop the `workspace` block and `vm.disk_size_gb` attaches a raw disk that
+`init.sh` formats on first boot and mounts at `/workspace`, with the local
+Postgres cluster in `/workspace/pgdata`. `idle_action: "retain"` keeps it
+across idling, but the disk belongs to the *sandbox*: a rebuild, a restart or
+a spec edit boots a new sandbox with an empty `/workspace`. Fine for a
+throwaway; not for a harness whose sessions and repos are the point.
 
 ## Operating it
 
@@ -134,5 +178,6 @@ serverctl exec fastcar -- sh -c 'cd /workspace/repos/<name> && codegraph --text 
 Git auth inside the VM: the agent's `git_clone`/`git_push` use whatever
 credentials exist in the guest — embed a token in the https URL when adding a
 repo, or `serverctl shell` in once and install an ssh key / credential helper
-under `/workspace` (rootfs changes don't survive; put keys in `/root/.ssh`
-via a setup hook or use token URLs).
+under `/workspace` (rootfs changes don't survive; with `vm.workspace`, a
+credential helper or key kept under `/workspace` travels with the snapshot —
+mind that it is then in the store too).

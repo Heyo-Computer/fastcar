@@ -10,15 +10,32 @@ import type { StreamEvent, UsageSummary } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createBrowserCheckTool } from "../tools/browserCheck.js";
-import { createGitTools, GIT_TOOL_NAMES } from "../tools/git.js";
+import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
+import { createMcpTools, MCP_READONLY_TOOL_NAMES } from "../tools/mcp.js";
+import type { McpManager } from "../services/mcp.js";
 import { translateSessionEvent, extractText, extractUsage } from "./events.js";
-import { MAXCODING_PROMPT, MINIMODEL_PROMPT } from "./prompts.js";
+import { MAXCODING_PLAN_PROMPT, MAXCODING_PROMPT, MINIMODEL_PROMPT } from "./prompts.js";
 import type { FastcarModels } from "./runtime.js";
 
 export type SubagentKind = "maxcoding" | "minimodel";
 
+/**
+ * What a subagent run is for. `implement` is the default: maxcoding changes
+ * code and verifies it. `plan` is read-only: maxcoding explores and writes an
+ * implementation plan plus the questions only the user can answer. minimodel
+ * is read-only whichever mode is requested.
+ */
+export type SubagentMode = "implement" | "plan";
+
+/** True when a run of this kind/mode can never change anything on the VM. */
+export function isReadOnlySubagentRun(kind: SubagentKind, mode: SubagentMode | undefined): boolean {
+  return kind === "minimodel" || mode === "plan";
+}
+
 export interface SubagentRunRequest {
   kind: SubagentKind;
+  /** Defaults to "implement". */
+  mode?: SubagentMode;
   task: string;
   taskId: string;
   signal: AbortSignal | undefined;
@@ -52,20 +69,35 @@ class Semaphore {
   }
 }
 
-const SUBAGENT_TOOLS: Record<SubagentKind, string[]> = {
+/** Concurrency pools. Planning runs are read-only and cheap, so they get their own, wider pool. */
+type PoolKey = "maxcoding" | "maxcoding:plan" | "minimodel";
+
+const READ_ONLY_GIT_TOOLS = GIT_TOOL_NAMES.filter((n) => !GIT_MUTATING_TOOLS.includes(n));
+
+const SUBAGENT_TOOLS: Record<PoolKey, string[]> = {
   // maxcoding gets git except clone and purge — the repository registry's
-  // lifecycle stays with the conductor, which can ask the user about it.
+  // lifecycle stays with the conductor, which can ask the user about it. The
+  // same split applies to MCP: it can call installed servers, not install them.
   maxcoding: [
     "read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "browser_check",
     ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone" && n !== "git_purge"),
+    ...MCP_READONLY_TOOL_NAMES, "mcp_call",
   ],
-  minimodel: ["read", "grep", "find", "ls", "web_search", "git_status", "git_list_repos"],
+  // Planning maxcoding must not be able to change anything — no bash either,
+  // since bash can mutate. This is what lets the conductor run it in plan mode.
+  "maxcoding:plan": ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
+  minimodel: ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
 };
 
-const SUBAGENT_PROMPTS: Record<SubagentKind, string> = {
+const SUBAGENT_PROMPTS: Record<PoolKey, string> = {
   maxcoding: MAXCODING_PROMPT,
+  "maxcoding:plan": MAXCODING_PLAN_PROMPT,
   minimodel: MINIMODEL_PROMPT,
 };
+
+function poolKey(kind: SubagentKind, mode: SubagentMode | undefined): PoolKey {
+  return kind === "maxcoding" && mode === "plan" ? "maxcoding:plan" : kind;
+}
 
 /** Using one of these means the subagent changed something, so it must verify it. */
 const MUTATING_TOOLS = ["edit", "write", "bash"];
@@ -103,7 +135,7 @@ function mergeUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
 }
 
 export class SubagentManager {
-  private semaphores: Record<SubagentKind, Semaphore>;
+  private semaphores: Record<PoolKey, Semaphore>;
   /**
    * AbortControllers for in-flight subagent runs, keyed by taskId. The
    * conductor's own tool-call signal is forwarded into each controller so a
@@ -115,9 +147,12 @@ export class SubagentManager {
   constructor(
     private readonly models: FastcarModels,
     private readonly cfg: Config,
+    /** MCP registry; when absent the mcp_* tools are simply not offered. */
+    private readonly mcp?: McpManager,
   ) {
     this.semaphores = {
       maxcoding: new Semaphore(2),
+      "maxcoding:plan": new Semaphore(4),
       minimodel: new Semaphore(4),
     };
   }
@@ -131,7 +166,7 @@ export class SubagentManager {
   }
 
   async run(req: SubagentRunRequest): Promise<SubagentReport> {
-    const release = await this.semaphores[req.kind].acquire();
+    const release = await this.semaphores[poolKey(req.kind, req.mode)].acquire();
     // Create an internal controller so this manager can cancel a run by taskId
     // even when the caller did not supply a signal. If the caller's signal
     // fires, forward it so conductor-driven aborts still propagate.
@@ -154,6 +189,7 @@ export class SubagentManager {
 
   private async runInner(req: SubagentRunRequest): Promise<SubagentReport> {
     const { kind, task, taskId, signal, onEvent } = req;
+    const pool = poolKey(kind, req.mode);
     if (signal?.aborted) throw new Error("aborted before start");
 
     const agentDir = path.join(this.cfg.dataDir, "agent");
@@ -165,7 +201,7 @@ export class SubagentManager {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => SUBAGENT_PROMPTS[kind],
+      systemPromptOverride: () => SUBAGENT_PROMPTS[pool],
     });
     await loader.reload();
 
@@ -175,11 +211,12 @@ export class SubagentManager {
       modelRuntime: this.models.runtime,
       model: this.models[kind],
       thinkingLevel: "off",
-      tools: SUBAGENT_TOOLS[kind],
+      tools: SUBAGENT_TOOLS[pool],
       customTools: [
         createWebSearchTool(this.cfg),
         createBrowserCheckTool(this.cfg),
         ...createGitTools(this.cfg),
+        ...(this.mcp ? createMcpTools(this.mcp) : []),
       ],
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(this.cfg.workdir),
@@ -204,9 +241,10 @@ export class SubagentManager {
 
       // Enforce the verification contract rather than trusting the prompt: a
       // coding agent that changed something and reported no verification gets
-      // exactly one follow-up turn to go and run the checks.
+      // exactly one follow-up turn to go and run the checks. Planning runs have
+      // no mutating tools, so this never fires for them.
       const changedSomething = MUTATING_TOOLS.some((t) => toolsUsed.has(t));
-      if (kind === "maxcoding" && changedSomething && !hasVerification(report)) {
+      if (pool === "maxcoding" && changedSomething && !hasVerification(report)) {
         await session.prompt(VERIFICATION_REMINDER);
         if (signal?.aborted) throw new Error("subagent aborted");
         const followUp = lastAssistantReport(session);

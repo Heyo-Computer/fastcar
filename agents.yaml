@@ -2,7 +2,7 @@
 agents:
   coding:
     name: maxcoding
-    description: Heavy‑weight coding agent for implementation, refactors, debugging.
+    description: Heavy‑weight coding agent for implementation, refactors, debugging. With mode=plan it runs read‑only and writes the implementation plan plus questions for the user.
   small_task:
     name: minimodel
     description: Fast, cheap read‑only agent for research, look‑ups, summarisation.

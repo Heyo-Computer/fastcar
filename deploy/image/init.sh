@@ -64,8 +64,23 @@ fi
 # that survives. Postgres data, Pi session JSONL, memories… everything stateful
 # lands under it. Format on first boot, decided by inspection — a flag file
 # would live on the rootfs and vanish.
+#
+# Two shapes of /dev/vdb, told apart by the filesystem label:
+#
+#   * `heyo-data` (or no filesystem yet) — the raw data disk `vm.disk_size_gb`
+#     attaches. Ours to format and mount.
+#   * `mount0`..`mountN` — an image heyvmd built from a host directory
+#     (`mke2fs -d`), which is what the deployment's `vm.workspace` arrives as.
+#     heyvmd mounts that one itself right after boot, before the start
+#     command runs; mounting it here too would make its mount fail and the
+#     create with it. Leave it alone.
 DATA_READY=0
-if [ -b /dev/vdb ]; then
+WORKSPACE_MANAGED=0
+if [ -b /dev/vdb ] && case "$(blkid -s LABEL -o value /dev/vdb 2>/dev/null)" in mount*) true;; *) false;; esac; then
+    echo "init: /dev/vdb is a heyvmd workspace image; heyvmd mounts it at /workspace after boot"
+    WORKSPACE_MANAGED=1
+    mkdir -p /workspace
+elif [ -b /dev/vdb ]; then
     if ! blkid /dev/vdb >/dev/null 2>&1; then
         echo "init: /dev/vdb has no filesystem, creating ext4 (first boot)"
         mkfs.ext4 -F -m0 -L heyo-data /dev/vdb >/tmp/mkfs.log 2>&1 \
@@ -80,7 +95,9 @@ if [ -b /dev/vdb ]; then
 else
     echo "init: no /dev/vdb — the deployment is missing vm.disk_size_gb"
 fi
-mkdir -p /workspace/log
+# Not when heyvmd owns the mount: the directory would land on the rootfs and
+# be shadowed a moment later. start.sh creates it once /workspace is real.
+[ "$WORKSPACE_MANAGED" = 1 ] || mkdir -p /workspace/log
 
 # --- sshd -----------------------------------------------------------------
 mkdir -p /run/sshd
@@ -162,6 +179,12 @@ SQL
             echo "postgresql binaries not found"
         fi
     ) >/workspace/log/pg-bringup.log 2>&1 &
+elif [ "$WORKSPACE_MANAGED" = 1 ]; then
+    # The workspace is captured and rebuilt by app-lb as its own user, which
+    # flattens ownership — and a data directory not owned by postgres is one
+    # it refuses to start on. Use an external DATABASE_URL with vm.workspace.
+    echo "init: local postgres is not started on a managed workspace (ownership" \
+         "does not survive a capture); point DATABASE_URL at an external server"
 else
     echo "init: refusing to start postgres without a mounted /workspace;" \
          "its data would land on the rootfs and vanish on the next cold boot"

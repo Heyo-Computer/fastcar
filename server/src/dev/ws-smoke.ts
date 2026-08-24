@@ -93,6 +93,34 @@ ws.on("open", () => {
     await waitFor("status", (m) => m.threadId === planThread && m.status === "idle", 30_000);
     assert(true, "plan approved and executed");
 
+    // 3b. plan flow with a read-only planning subagent: the plan-mode gate must
+    //     let run_subagent(maxcoding, mode=plan) through, and the plan follows.
+    send({ type: "create_thread", mode: "plan" });
+    const planThread2 = (
+      await waitFor("thread_created", (m) => m.thread.mode === "plan" && m.thread.id !== planThread)
+    ).thread.id;
+    send({ type: "prompt", threadId: planThread2, text: "delegate planning for a refactor" });
+    await waitFor(
+      "event",
+      (m) => m.threadId === planThread2 && m.agent === "maxcoding" && m.ev.kind === "tool_start",
+      60_000,
+    );
+    assert(true, "plan mode allows a read-only maxcoding planning subagent");
+    const subPlan = await waitFor(
+      "event",
+      (m) =>
+        m.threadId === planThread2 &&
+        m.agent === "conductor" &&
+        m.ev.kind === "tool_end" &&
+        m.ev.result.includes("## Questions for the user"),
+      60_000,
+    );
+    assert(subPlan != null, "planning subagent returned questions for the user");
+    const plan2 = await waitFor("plan_ready", (m) => m.threadId === planThread2, 30_000);
+    assert(plan2.planMarkdown.includes("Plan"), "conductor still submits the plan after delegating");
+    send({ type: "approve_plan", threadId: planThread2 });
+    await waitFor("status", (m) => m.threadId === planThread2 && m.status === "idle", 30_000);
+
     // 4. subagent delegation
     send({ type: "prompt", threadId, text: "please delegate this exploration" });
     const sub = await waitFor(
@@ -215,6 +243,42 @@ ws.on("open", () => {
       method: "DELETE",
     });
     assert(missingPurge.status === 404, "purging an unknown repository is a 404");
+
+    // MCP: install a server through the agent, call one of its tools, remove it.
+    // FASTCAR_SMOKE_MCP_SOURCE is a git repo (URL or path) with the echo fixture
+    // under mcp/ — see src/test/fixtures/mcp-echo and mcp.test.ts.
+    const mcpSource = process.env.FASTCAR_SMOKE_MCP_SOURCE;
+    if (mcpSource) {
+      send({ type: "prompt", threadId, text: `install the mcp server ${mcpSource}` });
+      const installed = await waitFor(
+        "mcp_servers_updated",
+        (m) => m.servers.some((s) => s.name === "mcp-echo" && s.status === "connected"),
+        120_000,
+      );
+      const echo = installed.servers.find((s) => s.name === "mcp-echo")!;
+      assert(echo.tools.some((t) => t.name === "echo"), "agent installed an MCP server and it advertises tools");
+      await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
+      send({ type: "prompt", threadId, text: "call the mcp echo tool" });
+      await waitFor(
+        "event",
+        (m) =>
+          m.threadId === threadId &&
+          m.agent === "conductor" &&
+          m.ev.kind === "tool_end" &&
+          m.ev.result.includes("echo from mock"),
+        60_000,
+      );
+      assert(true, "agent called an MCP tool and got its result");
+      await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
+      const mcpList = (await (await fetch(`${BASE}/api/mcp`)).json()) as { servers: Array<{ name: string }> };
+      assert(mcpList.servers.some((s) => s.name === "mcp-echo"), "GET /api/mcp lists the server");
+      // Listen before deleting: the broadcast can land while the fetch is still pending.
+      const removed = waitFor("mcp_servers_updated", (m) => !m.servers.some((s) => s.name === "mcp-echo"), 30_000);
+      const del = await fetch(`${BASE}/api/mcp/mcp-echo`, { method: "DELETE" });
+      assert(del.ok, "DELETE /api/mcp/:name removes the server");
+      await removed;
+      assert(true, "removal is broadcast to the UI");
+    }
 
     const bareRepo = process.env.FASTCAR_SMOKE_BARE_REPO;
     if (bareRepo) {

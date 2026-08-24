@@ -3,6 +3,7 @@ import type { ThreadMeta } from "@fastcar/shared";
 import { useStore } from "../state/store.ts";
 import { send } from "../lib/ws.ts";
 import { RepoPanel } from "./RepoPanel.tsx";
+import { McpPanel } from "./McpPanel.tsx";
 
 function groupLabel(iso: string): string {
   const d = new Date(iso);
@@ -201,6 +202,7 @@ export function Sidebar() {
       </nav>
 
       <RepoPanel />
+      <McpPanel />
     </aside>
   );
 }

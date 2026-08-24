@@ -177,6 +177,64 @@ export interface PurgeRepoResponse {
 }
 
 // ---------------------------------------------------------------------------
+// MCP servers
+// ---------------------------------------------------------------------------
+
+export type McpTransport = "stdio" | "http";
+
+/** One tool an MCP server advertises, as cached by the registry. */
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  /** JSON Schema for the tool's arguments. */
+  inputSchema?: Record<string, unknown>;
+  /** MCP tool annotations (readOnlyHint, destructiveHint, ...) when the server sets them. */
+  annotations?: Record<string, unknown>;
+}
+
+/** Live state of an installed MCP server, for the UI panel and /mcp. */
+export interface McpServerStatus {
+  name: string;
+  /** What it was installed from: a GitHub tree URL, a git URL, or an http endpoint. */
+  source: string;
+  transport: McpTransport;
+  /** Local project directory (stdio servers). */
+  path?: string;
+  /** Endpoint (http servers). */
+  url?: string;
+  command?: string;
+  args?: string[];
+  /** Names of configured env vars — values are never sent to the UI. */
+  envKeys: string[];
+  status: "connected" | "error" | "stopped";
+  error?: string;
+  tools: McpToolInfo[];
+  createdAt: string;
+}
+
+/** Body of POST /api/mcp */
+export interface InstallMcpRequest {
+  /** GitHub tree/blob URL, git URL, or local path (stdio), or an http(s) MCP endpoint with transport "http". */
+  source: string;
+  name?: string;
+  transport?: McpTransport;
+  /** Subdirectory inside the repository holding the server (derived from a GitHub tree URL). */
+  subpath?: string;
+  /** Branch, tag or commit to check out (derived from a GitHub tree URL). */
+  ref?: string;
+  /** Override the launch command instead of auto-detecting from package.json. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** Extra HTTP headers for http servers (e.g. Authorization). */
+  headers?: Record<string, string>;
+}
+
+export interface McpServersResponse {
+  servers: McpServerStatus[];
+}
+
+// ---------------------------------------------------------------------------
 // Composer autocomplete: slash commands and @-mentions
 // ---------------------------------------------------------------------------
 
@@ -273,6 +331,8 @@ export type ServerMessage =
   | { type: "question"; threadId: string; questionId: string; prompt: string; options?: string[] }
   | { type: "plan_ready"; threadId: string; planMarkdown: string }
   | { type: "repos_updated"; repos: RepoStatus[] }
+  /** The set of installed MCP servers, or one of their connection states, changed. */
+  | { type: "mcp_servers_updated"; servers: McpServerStatus[] }
   /** An artifact on the thread was created, updated or deleted (e.g. by the agent). */
   | { type: "artifacts_updated"; threadId: string }
   /** Result of a prompt thread's webhook delivery (Feature 3). */

@@ -16,6 +16,7 @@ import * as threadsDb from "../db/threads.js";
 import { toMeta } from "../db/threads.js";
 import { createConductorSession, type ConductorHandle } from "../pi/conductor.js";
 import { collectRepoStatuses, gitEvents } from "../services/git.js";
+import { mcpEvents, type McpManager } from "../services/mcp.js";
 import { expandMentions } from "../services/mentions.js";
 import { translateSessionEvent } from "../pi/events.js";
 import type { FastcarModels } from "../pi/runtime.js";
@@ -75,9 +76,11 @@ export class ThreadManager {
     private readonly subagents: SubagentManager,
     private readonly email?: EmailService,
     private readonly artifacts?: ArtifactService,
+    private readonly mcp?: McpManager,
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
     gitEvents.on("changed", () => void this.broadcastRepos());
+    mcpEvents.on("changed", () => void this.onMcpChanged());
     artifactEvents.on("changed", (threadId) => this.broadcast({ type: "artifacts_updated", threadId }));
   }
 
@@ -87,6 +90,25 @@ export class ThreadManager {
       this.broadcast({ type: "repos_updated", repos });
     } catch (err) {
       console.error("failed to collect repo statuses:", err);
+    }
+  }
+
+  /**
+   * MCP servers changed (installed, removed, connected, died): tell the UI, and
+   * rebuild every live conductor's system prompt so the next turn lists the
+   * current servers and tools.
+   */
+  private async onMcpChanged(): Promise<void> {
+    if (!this.mcp) return;
+    try {
+      this.broadcast({ type: "mcp_servers_updated", servers: await this.mcp.statuses() });
+    } catch (err) {
+      console.error("failed to collect MCP statuses:", err);
+    }
+    for (const rt of this.runtimes.values()) {
+      await rt.conductor?.refreshSystemPrompt().catch((err) => {
+        console.error(`failed to refresh prompt for thread ${rt.id}:`, err);
+      });
     }
   }
 
@@ -446,6 +468,7 @@ export class ThreadManager {
           modeChanged = true;
         },
         rename: (title) => this.applyTitle(rt, rt.id, title),
+        mcp: this.mcp,
       });
       this.stageAndSend(rt, "conductor", undefined, { kind: "system", text: output });
     } catch (err) {
@@ -659,6 +682,7 @@ export class ThreadManager {
         onSubagentEvent: (kind, taskId, ev) => this.onSubagentEvent(rt, kind, taskId, ev),
         email: this.email,
         artifacts: this.artifacts,
+        mcp: this.mcp,
         sessionFile: rec?.piSessionFile ?? null,
       });
 

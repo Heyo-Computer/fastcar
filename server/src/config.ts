@@ -11,6 +11,8 @@ export interface Config {
   dataDir: string;
   sessionDir: string;
   reposDir: string;
+  /** Where installed MCP servers are cloned and built. App-owned state, like dataDir. */
+  mcpDir: string;
   gitName: string | undefined;
   gitEmail: string | undefined;
   maxcodingModel: string;
@@ -78,6 +80,7 @@ export function loadConfig(): Config {
     dataDir,
     sessionDir,
     reposDir: path.resolve(env("FASTCAR_REPOS_DIR") ?? path.join(workdir, "repos")),
+    mcpDir: path.resolve(env("FASTCAR_MCP_DIR") ?? path.join(dataDir, "mcp")),
     gitName: env("FASTCAR_GIT_NAME"),
     gitEmail: env("FASTCAR_GIT_EMAIL"),
     maxcodingModel: env("MAXCODING_MODEL") ?? "anthropic/claude-sonnet-4.5",

@@ -17,6 +17,7 @@ import { registerPublicArtifactRoutes } from "./http/publicArtifacts.js";
 import { registerWs } from "./ws/handler.js";
 import { ArtifactService } from "./services/artifacts.js";
 import { EmailService } from "./services/emailService.js";
+import { McpManager } from "./services/mcp.js";
 import { startMockOpenAI } from "./dev/mock-openai.js";
 
 const cfg = loadConfig();
@@ -27,16 +28,19 @@ await migrate();
 await resetTransientStatuses();
 
 const models = await buildModels(cfg);
-const subagents = new SubagentManager(models, cfg);
+const mcp = new McpManager(cfg);
+const subagents = new SubagentManager(models, cfg, mcp);
 const artifacts = new ArtifactService(cfg);
 const email = new EmailService(cfg);
-const manager = new ThreadManager(cfg, models, subagents, email, artifacts);
+const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp);
+// Installed servers reconnect in the background; a broken one shows as "error" in the panel.
+await mcp.start();
 
 const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);
 await app.register(fastifyMultipart);
 
-registerRoutes(app, cfg, { artifacts, email });
+registerRoutes(app, cfg, { artifacts, email, mcp });
 // Public, unauthenticated artifact pages (see deploy/fastcar.json auth.public_paths).
 registerPublicArtifactRoutes(app, artifacts);
 registerWs(app, manager, cfg);
@@ -59,6 +63,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   app.log.info(`${signal} received, shutting down`);
   await manager.shutdown().catch(() => {});
+  await mcp.shutdown().catch(() => {});
   await app.close().catch(() => {});
   mockServer?.close();
   await closePool().catch(() => {});

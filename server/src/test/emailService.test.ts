@@ -16,6 +16,7 @@ function tempConfig(dataDir: string): Config {
     dataDir,
     sessionDir: path.join(dataDir, "sessions"),
     reposDir: path.join(dataDir, "repos"),
+    mcpDir: path.join(dataDir, "mcp"),
     gitName: undefined,
     gitEmail: undefined,
     maxcodingModel: "x",
