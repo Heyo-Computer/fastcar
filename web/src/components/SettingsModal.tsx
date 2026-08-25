@@ -1,17 +1,36 @@
 import { useEffect, useState } from "react";
-import type { SmtpSettingsResponse } from "@fastcar/shared";
+import {
+  REASONING_EFFORTS,
+  type AppSettingsResponse,
+  type ReasoningEffort,
+  type SmtpSettingsResponse,
+} from "@fastcar/shared";
 import { useStore } from "../state/store.ts";
 import { ModalShell } from "./AddArtifactModal.tsx";
 
+const EFFORT_HELP: Record<ReasoningEffort, string> = {
+  instant: "lowest latency — simple tasks, quick replies",
+  medium: "default balance of quality and latency",
+  high: "harder planning, reasoning and coding tasks (slower)",
+};
+
 /**
- * Settings modal (Feature 2): SMTP host/port/username/password/from-address
- * and a TLS/SSL toggle. Stored encrypted server-side. Admin only — the server
- * returns 403 when FASTCAR_ADMIN_TOKEN is set and the caller is not an admin;
- * in single-user dev mode the fields are always editable.
+ * Settings modal: the conductor's reasoning effort (Mercury `reasoning_effort`,
+ * applied to live threads from their next turn) and SMTP host/port/username/
+ * password/from-address with a TLS/SSL toggle (stored encrypted server-side).
+ * Saving is admin only — the server returns 403 when FASTCAR_ADMIN_TOKEN is
+ * set and the caller is not an admin; in single-user dev mode everything is
+ * editable.
  */
 export function SettingsModal() {
   const setModal = useStore((s) => s.setModal);
   const lastSlashResult = useStore((s) => s.lastSlashResult);
+
+  const [conductor, setConductor] = useState<AppSettingsResponse["conductor"] | null>(null);
+  const [effort, setEffort] = useState<ReasoningEffort>("medium");
+  const [effortBusy, setEffortBusy] = useState(false);
+  const [effortError, setEffortError] = useState<string | null>(null);
+  const [effortSaved, setEffortSaved] = useState(false);
 
   const [host, setHost] = useState("");
   const [port, setPort] = useState(587);
@@ -25,8 +44,48 @@ export function SettingsModal() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
+    void loadConductor();
     void load();
   }, []);
+
+  const loadConductor = async () => {
+    try {
+      const res = await fetch("/api/settings");
+      if (!res.ok) throw new Error(`settings unavailable (${res.status})`);
+      const data = (await res.json()) as AppSettingsResponse;
+      setConductor(data.conductor);
+      setEffort(data.conductor.reasoningEffort);
+    } catch (err) {
+      setEffortError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const saveConductor = async () => {
+    setEffortBusy(true);
+    setEffortError(null);
+    setEffortSaved(false);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conductor: { reasoningEffort: effort } }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(
+          res.status === 403 ? "Conductor settings are admin-only." : body.error ?? `save failed (${res.status})`,
+        );
+      }
+      const data = (await res.json()) as AppSettingsResponse;
+      setConductor(data.conductor);
+      setEffort(data.conductor.reasoningEffort);
+      setEffortSaved(true);
+    } catch (err) {
+      setEffortError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEffortBusy(false);
+    }
+  };
 
   const load = async () => {
     try {
@@ -82,7 +141,50 @@ export function SettingsModal() {
   };
 
   return (
-    <ModalShell title="Settings — SMTP" onClose={() => setModal("none")}>
+    <ModalShell title="Settings" onClose={() => setModal("none")}>
+      <SectionTitle>Conductor model</SectionTitle>
+      <p className="text-[0.72rem] text-ink-faint">
+        {conductor ? (
+          <>
+            Running on <code className="text-ink-dim">{conductor.model}</code> with a{" "}
+            {conductor.maxTokens.toLocaleString()}-token budget shared by reasoning and the answer.
+            Changes apply to every thread from its next turn.
+          </>
+        ) : (
+          "Loading…"
+        )}
+      </p>
+
+      <Field label="Reasoning effort">
+        <select
+          value={effort}
+          onChange={(e) => setEffort(e.target.value as ReasoningEffort)}
+          disabled={!conductor}
+          className="w-full rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent/60"
+        >
+          {REASONING_EFFORTS.map((value) => (
+            <option key={value} value={value}>
+              {value} — {EFFORT_HELP[value]}
+              {conductor && value === conductor.defaultReasoningEffort ? " (env default)" : ""}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      {effortError && <p className="text-[0.72rem] text-danger">⚠ {effortError}</p>}
+      {effortSaved && <p className="text-[0.72rem] text-accent">✓ Saved.</p>}
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => void saveConductor()}
+          disabled={effortBusy || !conductor || effort === conductor.reasoningEffort}
+          className="rounded-lg border border-accent-dim/50 bg-accent-dim/20 px-4 py-1.5 text-sm text-accent hover:bg-accent-dim/30 disabled:opacity-40"
+        >
+          {effortBusy ? "Saving…" : "Save effort"}
+        </button>
+      </div>
+
+      <SectionTitle>SMTP</SectionTitle>
       <p className="text-[0.72rem] text-ink-faint">
         SMTP credentials are stored encrypted at rest on the server. The password is
         never returned; leave it blank to keep the existing value.
@@ -171,10 +273,18 @@ export function SettingsModal() {
           disabled={busy}
           className="rounded-lg border border-accent-dim/50 bg-accent-dim/20 px-4 py-1.5 text-sm text-accent hover:bg-accent-dim/30 disabled:opacity-40"
         >
-          {busy ? "Saving…" : "Save"}
+          {busy ? "Saving…" : "Save SMTP"}
         </button>
       </div>
     </ModalShell>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="border-b border-border pb-1 text-[0.7rem] font-semibold uppercase tracking-wide text-ink-dim">
+      {children}
+    </h3>
   );
 }
 

@@ -26,7 +26,8 @@ await migrate();
 
 const models = await buildModels(cfg);
 console.log(
-  `models: conductor=${models.conductor.provider}/${models.conductor.id}, ` +
+  `models: conductor=${models.conductor.provider}/${models.conductor.id} ` +
+    `(reasoning_effort=${cfg.conductorReasoningEffort}), ` +
     `maxcoding=${models.maxcoding.provider}/${models.maxcoding.id}, ` +
     `minimodel=${models.minimodel.provider}/${models.minimodel.id}`,
 );
@@ -57,6 +58,7 @@ const { session } = await createConductorSession({
     else console.log(`\n[subagent ${kind} ${taskId}] ${ev.kind}`);
   },
   sessionFile: null,
+  reasoningEffort: cfg.conductorReasoningEffort,
 });
 
 session.subscribe((event) => {

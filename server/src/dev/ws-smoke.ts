@@ -14,8 +14,11 @@ import type {
   ServerMessage,
   ThreadHistoryResponse,
 } from "@fastcar/shared";
+import { REASONING_EFFORTS, type AppSettingsResponse, type ReasoningEffort } from "@fastcar/shared";
 
 const BASE = process.env.FASTCAR_URL ?? "http://localhost:3000";
+/** The mock OpenAI server behind the target (FASTCAR_MOCK_PORT of that server). */
+const MOCK_BASE = `http://127.0.0.1:${process.env.FASTCAR_MOCK_PORT ?? 3210}`;
 const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws`);
 
 const received: ServerMessage[] = [];
@@ -130,6 +133,51 @@ ws.on("open", () => {
     assert(sub.taskId != null, "subagent events carry taskId");
     await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
     assert(true, "delegation completed");
+
+    // 4b. conductor settings round-trip (reasoning effort); restore afterwards
+    const settingsBefore = (await (await fetch(`${BASE}/api/settings`)).json()) as AppSettingsResponse;
+    assert(
+      REASONING_EFFORTS.includes(settingsBefore.conductor.reasoningEffort),
+      "GET /api/settings reports the conductor reasoning effort",
+    );
+    const flipped: ReasoningEffort = settingsBefore.conductor.reasoningEffort === "high" ? "medium" : "high";
+    const setRes = await fetch(`${BASE}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conductor: { reasoningEffort: flipped } }),
+    });
+    assert(setRes.ok, "POST /api/settings accepts a reasoning effort");
+    const settingsAfter = (await (await fetch(`${BASE}/api/settings`)).json()) as AppSettingsResponse;
+    assert(settingsAfter.conductor.reasoningEffort === flipped, "reasoning effort persisted");
+    // The already-running conductor on `threadId` must carry the new effort on
+    // its next turn — check the mock's request log when the mock is reachable.
+    send({ type: "prompt", threadId, text: "hello again" });
+    await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 30_000);
+    const mockLog = await fetch(`${MOCK_BASE}/__mock/requests`).then(
+      (r) => r.json() as Promise<{ requests: Array<{ model: string; reasoning_effort?: string }> }>,
+      () => null,
+    );
+    if (mockLog) {
+      const conductorModel = settingsAfter.conductor.model.split("/")[1];
+      const lastConductorReq = [...mockLog.requests].reverse().find((r) => r.model === conductorModel);
+      assert(
+        lastConductorReq?.reasoning_effort === flipped,
+        `live conductor sent reasoning_effort=${flipped} (saw ${lastConductorReq?.reasoning_effort ?? "nothing"})`,
+      );
+    } else {
+      console.log(`  (mock request log not reachable at ${MOCK_BASE}; skipped live-effort check)`);
+    }
+    const badRes = await fetch(`${BASE}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conductor: { reasoningEffort: "turbo" } }),
+    });
+    assert(badRes.status === 400, "POST /api/settings rejects an unknown effort");
+    await fetch(`${BASE}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conductor: { reasoningEffort: settingsBefore.conductor.reasoningEffort } }),
+    });
 
     // 5. slash commands and @-mention sources
     const commands = (

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import "./env.js";
+import { REASONING_EFFORTS, type ReasoningEffort } from "@fastcar/shared";
 
 export interface Config {
   port: number;
@@ -21,6 +22,16 @@ export interface Config {
   tavilyApiKey: string | undefined;
   openrouterBaseUrl: string;
   inceptionBaseUrl: string;
+  /** InceptionLabs chat model id the conductor runs on (INCEPTION_MODEL). */
+  inceptionModel: string;
+  /**
+   * max_tokens sent on every conductor request. Mercury shares this budget
+   * between internal reasoning and the answer, so raise it (INCEPTION_MAX_TOKENS)
+   * if high-effort runs stop with finish_reason "length".
+   */
+  inceptionMaxTokens: number;
+  /** Boot-time conductor reasoning effort; the settings UI overrides it at runtime. */
+  conductorReasoningEffort: ReasoningEffort;
   /** Token identifying an admin caller (Feature 2/3 restrictions). Blank = no auth. */
   adminToken: string | undefined;
   /** Whose identity new threads/artifacts are owned by when no caller is identified. */
@@ -41,6 +52,16 @@ export interface Config {
 function env(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
+}
+
+function reasoningEffortEnv(name: string, fallback: ReasoningEffort): ReasoningEffort {
+  const raw = env(name);
+  if (!raw) return fallback;
+  const value = raw.toLowerCase() as ReasoningEffort;
+  if (!REASONING_EFFORTS.includes(value)) {
+    throw new Error(`${name} must be one of ${REASONING_EFFORTS.join(", ")} (got "${raw}")`);
+  }
+  return value;
 }
 
 export function loadConfig(): Config {
@@ -93,6 +114,9 @@ export function loadConfig(): Config {
     inceptionBaseUrl: mock
       ? `http://127.0.0.1:${mockPort}/v1`
       : "https://api.inceptionlabs.ai/v1",
+    inceptionModel: env("INCEPTION_MODEL") ?? "mercury-2.5",
+    inceptionMaxTokens: Number(env("INCEPTION_MAX_TOKENS") ?? 16384),
+    conductorReasoningEffort: reasoningEffortEnv("CONDUCTOR_REASONING_EFFORT", "medium"),
     adminToken: env("FASTCAR_ADMIN_TOKEN"),
     defaultOwner: env("FASTCAR_DEFAULT_OWNER") ?? null,
     publicUrl: (env("FASTCAR_PUBLIC_URL") ?? `http://localhost:${port}`).replace(/\/+$/, ""),

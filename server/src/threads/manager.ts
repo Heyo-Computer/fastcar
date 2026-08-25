@@ -9,12 +9,14 @@ import type {
   ThreadMeta,
   ThreadMode,
   ThreadStatus,
+  ReasoningEffort,
 } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { insertEvents, maxSeq, type EventInsert } from "../db/events.js";
 import * as threadsDb from "../db/threads.js";
 import { toMeta } from "../db/threads.js";
 import { createConductorSession, type ConductorHandle } from "../pi/conductor.js";
+import { appSettingsEvents, type AppSettings } from "../services/appSettings.js";
 import { collectRepoStatuses, gitEvents } from "../services/git.js";
 import { mcpEvents, type McpManager } from "../services/mcp.js";
 import { expandMentions } from "../services/mentions.js";
@@ -77,8 +79,10 @@ export class ThreadManager {
     private readonly email?: EmailService,
     private readonly artifacts?: ArtifactService,
     private readonly mcp?: McpManager,
+    private readonly settings?: AppSettings,
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
+    appSettingsEvents.on("changed", () => this.onSettingsChanged());
     gitEvents.on("changed", () => void this.broadcastRepos());
     mcpEvents.on("changed", () => void this.onMcpChanged());
     artifactEvents.on("changed", (threadId) => this.broadcast({ type: "artifacts_updated", threadId }));
@@ -91,6 +95,18 @@ export class ThreadManager {
     } catch (err) {
       console.error("failed to collect repo statuses:", err);
     }
+  }
+
+  /** The conductor's reasoning effort follows the ⚙ setting, live sessions included. */
+  private onSettingsChanged(): void {
+    const effort = this.conductorReasoningEffort();
+    for (const rt of this.runtimes.values()) {
+      rt.conductor?.setReasoningEffort(effort);
+    }
+  }
+
+  private conductorReasoningEffort(): ReasoningEffort {
+    return this.settings?.conductorReasoningEffort() ?? this.cfg.conductorReasoningEffort;
   }
 
   /**
@@ -684,6 +700,7 @@ export class ThreadManager {
         artifacts: this.artifacts,
         mcp: this.mcp,
         sessionFile: rec?.piSessionFile ?? null,
+        reasoningEffort: this.conductorReasoningEffort(),
       });
 
       handle.session.subscribe((event) => {

@@ -9,7 +9,7 @@ Fastcar is a multi-vendor agent harness built on the
 
 ## Sections (to be filled in)
 
-- Conductor session (Pi `AgentSession`, Mercury model)
+- Conductor session (Pi `AgentSession`, Mercury 2.5 with a settings-controlled `reasoning_effort`)
 - Subagent manager (in-process Pi sessions on OpenRouter)
 - Thread state machine (`idle` / `running` / `awaiting_input` /
   `awaiting_approval`)

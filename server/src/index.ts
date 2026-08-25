@@ -17,6 +17,7 @@ import { registerPublicArtifactRoutes } from "./http/publicArtifacts.js";
 import { registerWs } from "./ws/handler.js";
 import { ArtifactService } from "./services/artifacts.js";
 import { EmailService } from "./services/emailService.js";
+import { AppSettings } from "./services/appSettings.js";
 import { McpManager } from "./services/mcp.js";
 import { startMockOpenAI } from "./dev/mock-openai.js";
 
@@ -32,7 +33,8 @@ const mcp = new McpManager(cfg);
 const subagents = new SubagentManager(models, cfg, mcp);
 const artifacts = new ArtifactService(cfg);
 const email = new EmailService(cfg);
-const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp);
+const settings = new AppSettings(cfg);
+const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp, settings);
 // Installed servers reconnect in the background; a broken one shows as "error" in the panel.
 await mcp.start();
 
@@ -40,7 +42,7 @@ const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);
 await app.register(fastifyMultipart);
 
-registerRoutes(app, cfg, { artifacts, email, mcp });
+registerRoutes(app, cfg, { artifacts, email, mcp, settings });
 // Public, unauthenticated artifact pages (see deploy/fastcar.json auth.public_paths).
 registerPublicArtifactRoutes(app, artifacts);
 registerWs(app, manager, cfg);

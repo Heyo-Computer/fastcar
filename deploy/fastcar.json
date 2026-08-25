@@ -34,6 +34,8 @@
     "ttl_seconds": 86400,
     "env_vars": {
       "INCEPTION_API_KEY": "REPLACE_ME_INCEPTION_API_KEY",
+      "INCEPTION_MODEL": "mercury-2.5",
+      "CONDUCTOR_REASONING_EFFORT": "medium",
       "OPENROUTER_API_KEY": "REPLACE_ME_OPENROUTER_API_KEY",
       "TAVILY_API_KEY": "REPLACE_ME_TAVILY_API_KEY",
       "MAXCODING_MODEL": "anthropic/claude-sonnet-4.5",

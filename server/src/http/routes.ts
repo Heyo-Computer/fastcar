@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
+  AppSettingsRequest,
+  AppSettingsResponse,
   ArtifactNode,
   ArtifactResponse,
   ArtifactsTreeResponse,
@@ -25,11 +27,13 @@ import { loadPromptTemplates } from "../services/promptTemplates.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
+import type { AppSettings } from "../services/appSettings.js";
 
 export interface RouteDeps {
   artifacts: ArtifactService;
   email: EmailService;
   mcp?: McpManager;
+  settings?: AppSettings;
 }
 
 export function registerRoutes(
@@ -242,6 +246,28 @@ export function registerRoutes(
   app.get("/api/prompt-templates", async (): Promise<PromptTemplatesResponse> => ({
     templates: loadPromptTemplates(),
   }));
+
+  // -------------------------------------------------------------- settings
+
+  /** GET /api/settings — conductor model + reasoning effort. Nothing secret; any caller. */
+  app.get("/api/settings", async (_req, reply): Promise<AppSettingsResponse | FastifyReply> => {
+    if (!deps.settings) return reply.code(404).send({ error: "settings not available" });
+    return deps.settings.get();
+  });
+
+  /** POST /api/settings — persist; live conductors pick the change up next turn. Admin only. */
+  app.post("/api/settings", async (req, reply): Promise<AppSettingsResponse | FastifyReply> => {
+    if (!deps.settings) return reply.code(404).send({ error: "settings not available" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    const body = req.body as AppSettingsRequest | null;
+    if (!body || typeof body !== "object") return reply.code(400).send({ error: "invalid body" });
+    try {
+      return deps.settings.update(body);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   // ------------------------------------------------------------------ smtp
 

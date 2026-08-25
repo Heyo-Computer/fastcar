@@ -1,6 +1,7 @@
 import path from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { ReasoningEffort } from "@fastcar/shared";
 import type { Config } from "../config.js";
 
 export interface FastcarModels {
@@ -8,6 +9,21 @@ export interface FastcarModels {
   conductor: Model<any>;
   maxcoding: Model<any>;
   minimodel: Model<any>;
+}
+
+/**
+ * The conductor's user-facing effort setting expressed as the Pi thinking level
+ * that the model's thinkingLevelMap turns back into Mercury's reasoning_effort.
+ */
+export function conductorEffortToThinkingLevel(effort: ReasoningEffort): ThinkingLevel {
+  switch (effort) {
+    case "instant":
+      return "low";
+    case "high":
+      return "high";
+    default:
+      return "medium";
+  }
 }
 
 /**
@@ -31,19 +47,34 @@ export async function buildModels(cfg: Config): Promise<FastcarModels> {
     authHeader: true,
     models: [
       {
-        id: "mercury-2",
-        name: "Mercury 2",
-        reasoning: false,
+        id: cfg.inceptionModel,
+        name: cfg.inceptionModel,
+        // Mercury 2.5 takes OpenAI-style `reasoning_effort`; Pi only emits it
+        // when the model is flagged as reasoning-capable.
+        reasoning: true,
+        // Pi thinking level -> Mercury reasoning_effort (instant | medium | high).
+        // `off` is unsupported (null) so the session always sends an explicit
+        // effort; see conductorEffortToThinkingLevel().
+        thinkingLevelMap: {
+          off: null,
+          minimal: "instant",
+          low: "instant",
+          medium: "medium",
+          high: "high",
+        },
         input: ["text"],
         contextWindow: 128000,
-        maxTokens: 16384,
-        cost: { input: 0.25, output: 0.75, cacheRead: 0, cacheWrite: 0 },
+        // Shared budget for reasoning + answer (InceptionLabs recommends 8192
+        // by default; more is needed at high effort).
+        maxTokens: cfg.inceptionMaxTokens,
+        cost: { input: 0.25, output: 0.75, cacheRead: 0.025, cacheWrite: 0 },
         compat: {
           // Mercury is a diffusion LM behind an OpenAI-compatible API; keep the
-          // request surface conservative.
+          // request surface conservative apart from reasoning_effort.
           supportsStrictMode: false,
           supportsDeveloperRole: false,
-          supportsReasoningEffort: false,
+          supportsReasoningEffort: true,
+          maxTokensField: "max_tokens",
         },
       },
     ],
@@ -55,8 +86,8 @@ export async function buildModels(cfg: Config): Promise<FastcarModels> {
     registerMockOpenRouter(runtime, cfg);
   }
 
-  const conductor = runtime.getModel("inceptionlabs", "mercury-2");
-  if (!conductor) throw new Error("failed to register inceptionlabs/mercury-2");
+  const conductor = runtime.getModel("inceptionlabs", cfg.inceptionModel);
+  if (!conductor) throw new Error(`failed to register inceptionlabs/${cfg.inceptionModel}`);
 
   const maxcoding = getOrRegisterOpenRouterModel(runtime, cfg, cfg.maxcodingModel);
   const minimodel = getOrRegisterOpenRouterModel(runtime, cfg, cfg.minimodelModel);

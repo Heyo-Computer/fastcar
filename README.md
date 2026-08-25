@@ -33,7 +33,7 @@ the result to the `gh-pages` branch on every push to `main`.
                      │       │            awaiting_input /       │
                      │       │            awaiting_approval      │
                      │  Conductor session (Pi AgentSession)      │
-                     │   model: inceptionlabs/mercury-2          │
+                     │   model: inceptionlabs/mercury-2.5        │
                      │   tools: read bash edit write grep find ls│
                      │          run_subagent ask_user submit_plan│
                      │          memory_* web_search              │
@@ -133,6 +133,9 @@ recurses forever.
 |---|---|---|
 | `DATABASE_URL` | Postgres connection | required |
 | `INCEPTION_API_KEY` | Conductor model auth (Mercury) | required unless mock |
+| `INCEPTION_MODEL` | InceptionLabs chat model id for the conductor | `mercury-2.5` |
+| `INCEPTION_MAX_TOKENS` | `max_tokens` per conductor request — budget shared by Mercury's reasoning and its answer; raise it if high-effort turns end with `finish_reason: "length"` | `16384` |
+| `CONDUCTOR_REASONING_EFFORT` | Mercury `reasoning_effort` at boot: `instant`, `medium`, `high`. The ⚙ settings modal overrides it at runtime (stored in `<data dir>/settings.json`) | `medium` |
 | `OPENROUTER_API_KEY` | Subagents + transcription | required unless mock |
 | `MAXCODING_MODEL` | OpenRouter slug for the heavy coding subagent | `anthropic/claude-sonnet-4.5` |
 | `MINIMODEL_MODEL` | OpenRouter slug for the fast/cheap subagent | `google/gemini-2.5-flash-lite` |

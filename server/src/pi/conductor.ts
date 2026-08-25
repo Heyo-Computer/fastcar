@@ -6,7 +6,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import type { ThreadMode } from "@fastcar/shared";
+import type { ReasoningEffort, ThreadMode } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { recentMemories } from "../db/memories.js";
 import { createAskUserTool, type AskUserBridge } from "../tools/askUser.js";
@@ -27,7 +27,7 @@ import type { McpManager } from "../services/mcp.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import { conductorPrompt } from "./prompts.js";
-import type { FastcarModels } from "./runtime.js";
+import { conductorEffortToThinkingLevel, type FastcarModels } from "./runtime.js";
 import type { SubagentManager } from "./subagents.js";
 
 /**
@@ -63,12 +63,16 @@ export interface ConductorDeps {
   mcp?: McpManager;
   /** Existing Pi JSONL session file to resume, or null for a fresh session. */
   sessionFile: string | null;
+  /** Mercury reasoning_effort for this session's turns (settings UI / env default). */
+  reasoningEffort: ReasoningEffort;
 }
 
 export interface ConductorHandle {
   session: AgentSession;
   /** Re-read memories and rebuild the system prompt (call after a mode flip). */
   refreshSystemPrompt: () => Promise<void>;
+  /** Change the reasoning effort; takes effect from the next model turn (mid-run too). */
+  setReasoningEffort: (effort: ReasoningEffort) => void;
 }
 
 export async function createConductorSession(deps: ConductorDeps): Promise<ConductorHandle> {
@@ -107,7 +111,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
     agentDir,
     modelRuntime: models.runtime,
     model: models.conductor,
-    thinkingLevel: "off",
+    thinkingLevel: conductorEffortToThinkingLevel(deps.reasoningEffort),
     // The allowlist must name custom tools too — an allowlist of builtins alone
     // would disable every custom tool.
     tools: [
@@ -135,6 +139,13 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
     sessionManager,
     settingsManager: SettingsManager.inMemory(),
   });
+
+  // A resumed JSONL session replays its own thinking level (possibly the old
+  // "off"); the current setting always wins.
+  const setReasoningEffort = (effort: ReasoningEffort): void => {
+    session.setThinkingLevel(conductorEffortToThinkingLevel(effort));
+  };
+  setReasoningEffort(deps.reasoningEffort);
 
   // Plan-mode gate: one session per thread; the allowlist is fixed at creation,
   // so read-only enforcement happens per call here.
@@ -178,5 +189,6 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       // prompt into live agent state so the next turn sees the current mode.
       session.agent.state.systemPrompt = conductorPrompt(deps.getMode(), memories, mcpSummary);
     },
+    setReasoningEffort,
   };
 }

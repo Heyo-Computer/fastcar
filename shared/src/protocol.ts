@@ -118,6 +118,35 @@ export interface SmtpSettingsRequest {
   secure: boolean;
 }
 
+/**
+ * Conductor reasoning effort (InceptionLabs Mercury `reasoning_effort`):
+ * instant = lowest latency, medium = default balance, high = harder planning
+ * and coding. Stored server-side; applies to every conductor turn from the
+ * next one on.
+ */
+export type ReasoningEffort = "instant" | "medium" | "high";
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["instant", "medium", "high"];
+
+/** GET /api/settings */
+export interface AppSettingsResponse {
+  conductor: {
+    /** Provider/model id the conductor runs on, e.g. inceptionlabs/mercury-2.5. */
+    model: string;
+    reasoningEffort: ReasoningEffort;
+    /** Effort baked in by env (CONDUCTOR_REASONING_EFFORT) — what "reset" would restore. */
+    defaultReasoningEffort: ReasoningEffort;
+    /** max_tokens sent per request — the budget shared by reasoning and the answer. */
+    maxTokens: number;
+  };
+}
+
+/** POST /api/settings — partial; omitted fields keep their stored value. */
+export interface AppSettingsRequest {
+  conductor?: {
+    reasoningEffort?: ReasoningEffort;
+  };
+}
+
 /** A pending interaction that must survive page refresh (stored in threads.pending_json). */
 export type PendingInteraction =
   | { kind: "question"; questionId: string; prompt: string; options?: string[] }

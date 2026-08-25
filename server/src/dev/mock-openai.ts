@@ -33,7 +33,19 @@ interface ChatRequest {
   messages: ChatMessage[];
   tools?: Array<{ function?: { name?: string } }>;
   stream?: boolean;
+  reasoning_effort?: string;
+  max_tokens?: number;
 }
+
+/** What a request looked like on the wire — for tests asserting on Pi's request shape. */
+export interface MockChatRequestRecord {
+  model: string;
+  reasoning_effort?: string;
+  max_tokens?: number;
+  toolNames: string[];
+}
+
+const MAX_RECORDED_REQUESTS = 50;
 
 function contentToText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -259,11 +271,25 @@ async function readBody(req: http.IncomingMessage): Promise<Buffer> {
 }
 
 export function startMockOpenAI(port: number): Promise<http.Server> {
+  const recorded: MockChatRequestRecord[] = [];
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "";
     try {
+      // GET /__mock/requests — the last chat requests seen (newest last).
+      if (req.method === "GET" && url.startsWith("/__mock/requests")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ requests: recorded }));
+        return;
+      }
       if (req.method === "POST" && url.endsWith("/chat/completions")) {
         const body = JSON.parse((await readBody(req)).toString()) as ChatRequest;
+        recorded.push({
+          model: body.model,
+          reasoning_effort: body.reasoning_effort,
+          max_tokens: body.max_tokens,
+          toolNames: (body.tools ?? []).map((t) => t.function?.name ?? "").filter(Boolean),
+        });
+        if (recorded.length > MAX_RECORDED_REQUESTS) recorded.shift();
         const reply = decideReply(body);
         if (body.stream === false) {
           const message =
