@@ -14,6 +14,7 @@ import { SubagentManager } from "./pi/subagents.js";
 import { ThreadManager } from "./threads/manager.js";
 import { registerRoutes } from "./http/routes.js";
 import { registerPublicArtifactRoutes } from "./http/publicArtifacts.js";
+import { registerPublicPromptTriggerRoutes } from "./http/publicPromptTrigger.js";
 import { registerWs } from "./ws/handler.js";
 import { ArtifactService } from "./services/artifacts.js";
 import { EmailService } from "./services/emailService.js";
@@ -44,9 +45,11 @@ const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);
 await app.register(fastifyMultipart);
 
-registerRoutes(app, cfg, { artifacts, email, mcp, settings, subagentSettings });
+registerRoutes(app, cfg, { artifacts, email, mcp, settings, subagentSettings, manager });
 // Public, unauthenticated artifact pages (see deploy/fastcar.json auth.public_paths).
 registerPublicArtifactRoutes(app, artifacts);
+// Public, unauthenticated prompt-thread trigger (`/pt/<id>`).
+registerPublicPromptTriggerRoutes(app, manager);
 registerWs(app, manager, cfg);
 
 // Serve the built web UI in production (web/dist); Vite dev server proxies to us in dev.
@@ -54,7 +57,7 @@ const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.
 if (fs.existsSync(webDist)) {
   await app.register(fastifyStatic, { root: webDist });
   app.setNotFoundHandler((req, reply) => {
-    if (req.raw.url?.startsWith("/api") || req.raw.url?.startsWith("/ws") || req.raw.url?.startsWith("/artifacts/")) {
+    if (req.raw.url?.startsWith("/api") || req.raw.url?.startsWith("/ws") || req.raw.url?.startsWith("/artifacts/") || req.raw.url?.startsWith("/pt/")) {
       return reply.code(404).send({ error: "not found" });
     }
     return reply.sendFile("index.html");

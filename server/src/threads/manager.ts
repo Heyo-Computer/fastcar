@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import type {
   AgentName,
   PendingInteraction,
@@ -14,6 +15,7 @@ import type {
 import type { Config } from "../config.js";
 import { insertEvents, maxSeq, type EventInsert } from "../db/events.js";
 import * as threadsDb from "../db/threads.js";
+import type { ThreadRecord } from "../db/threads.js";
 import { toMeta } from "../db/threads.js";
 import { createConductorSession, type ConductorHandle } from "../pi/conductor.js";
 import { appSettingsEvents, type AppSettings } from "../services/appSettings.js";
@@ -26,12 +28,15 @@ import type { SubagentKind, SubagentManager } from "../pi/subagents.js";
 import { completePrompt } from "../services/llmService.js";
 import { getPromptTemplate, resolveTemplate } from "../services/promptTemplates.js";
 import { RateLimiter, postToWebhook, validateWebhookUrl } from "../services/webhook.js";
-import { WebhookTokenStore } from "../services/webhookTokens.js";
+import { WebhookTokenStore, generateTriggerToken } from "../services/webhookTokens.js";
 import type { EmailService } from "../services/emailService.js";
 import { artifactEvents, type ArtifactService } from "../services/artifacts.js";
 import { findCommand, parseCommandLine, runCommand } from "./commands.js";
 
 type Broadcast = (msg: ServerMessage) => void;
+
+/** Canonical public path prefix for triggering a prompt thread (no auth). Keep in sync with deploy/fastcar.json `auth.public_paths`. */
+export const PUBLIC_PROMPT_TRIGGER_PREFIX = "/pt/";
 
 interface PendingQuestion {
   questionId: string;
@@ -71,6 +76,8 @@ export class ThreadManager {
   private deltaTimer: NodeJS.Timeout | null = null;
   private readonly webhookTokens: WebhookTokenStore;
   private readonly webhookLimiter = new RateLimiter(10, 60_000);
+  /** Per-thread rate limit for public prompt triggers (5 calls / 60s). */
+  private readonly triggerLimiter = new RateLimiter(5, 60_000);
 
   constructor(
     private readonly cfg: Config,
@@ -168,9 +175,28 @@ export class ThreadManager {
 
   // ---------------------------------------------------------------- threads
 
+  /**
+   * Public, unauthenticated trigger URL for a prompt thread:
+   * `<publicUrl>/pt/<threadId>`. Returns null for chat threads (no trigger).
+   */
+  threadPublicUrl(threadId: string): string | null {
+    return `${this.cfg.publicUrl}${PUBLIC_PROMPT_TRIGGER_PREFIX}${threadId}`;
+  }
+
+  /**
+   * Wrap `toMeta()` and add the public trigger URL for prompt threads. The URL
+   * is the capability that lets an unauthenticated caller re-run the thread via
+   * `/pt/<id>`; chat threads get `null` so the UI can hide the trigger affordance.
+   */
+  private enrichMeta(rec: ThreadRecord): ThreadMeta {
+    const meta = toMeta(rec);
+    meta.publicUrl = rec.threadType === "prompt" ? this.threadPublicUrl(rec.id) : null;
+    return meta;
+  }
+
   async createThread(mode: ThreadMode = "act"): Promise<ThreadMeta> {
     const rec = await threadsDb.createThread(mode);
-    const meta = toMeta(rec);
+    const meta = this.enrichMeta(rec);
     this.broadcast({ type: "thread_created", thread: meta });
     return meta;
   }
@@ -203,18 +229,24 @@ export class ThreadManager {
     const rec = await threadsDb.createThread("act", "prompt");
     const threadId = rec.id;
     this.webhookTokens.set(threadId, opts.webhookToken);
+    // Mint a trigger token so the public `/pt/<id>` endpoint can re-run this
+    // thread; the token is the URL capability (never sent back over the wire
+    // except via the admin-owned create response below).
+    const triggerToken = generateTriggerToken();
+    this.webhookTokens.setTriggerToken(threadId, triggerToken);
 
     const config: PromptThreadConfig = {
       templateId: template.id,
       webhookUrl: opts.webhookUrl,
       webhookTokenSet: Boolean(opts.webhookToken),
       webhookStatus: "pending",
+      variables: opts.variables ?? {},
     };
     const titled = await threadsDb.updateThread(threadId, {
       title: opts.title?.trim() || `Prompt: ${template.id}`,
       promptConfig: config,
     });
-    if (titled) this.broadcast({ type: "thread_created", thread: toMeta(titled) });
+    if (titled) this.broadcast({ type: "thread_created", thread: this.enrichMeta(titled) });
 
     // Record the resolved prompt as the user message that started this thread.
     const rt = await this.getRuntime(threadId);
@@ -229,7 +261,7 @@ export class ThreadManager {
       console.error(`prompt thread ${threadId} delivery failed:`, err);
     });
 
-    return titled ? toMeta(titled) : toMeta(rec);
+    return titled ? this.enrichMeta(titled) : this.enrichMeta(rec);
   }
 
   private async runPromptThreadDelivery(threadId: string, promptText: string): Promise<void> {
@@ -296,6 +328,52 @@ export class ThreadManager {
     }
   }
 
+  /**
+   * Publicly re-trigger a prompt thread via its `/pt/<id>` capability URL.
+   *
+   * Validates the thread exists and is a prompt thread, compares the supplied
+   * token against the stored trigger token in constant time, rate-limits per
+   * thread, then re-resolves the template with the stored variables and re-runs
+   * the delivery. Returns the delivery outcome so the public endpoint can map
+   * it to an HTTP status without exposing internals.
+   */
+  async triggerPromptThread(
+    threadId: string,
+    token: string,
+  ): Promise<{ status: "accepted" | "error" | "not_found" | "unauthorized" | "rate_limited"; message?: string }> {
+    const rec = await threadsDb.getThread(threadId);
+    if (!rec) return { status: "not_found" };
+    if (rec.threadType !== "prompt") return { status: "not_found" };
+
+    // Constant-time comparison: a mismatched token must not leak how far the
+    // stored token matched. Empty stored token => no trigger configured.
+    const stored = this.webhookTokens.getTriggerToken(threadId);
+    if (!stored || !token || !timingSafeEqualString(token, stored)) {
+      return { status: "unauthorized" };
+    }
+
+    const rate = this.triggerLimiter.check(threadId);
+    if (!rate.allowed) {
+      return {
+        status: "rate_limited",
+        message: `rate limit exceeded; retry in ${Math.ceil((rate.retryAfterMs ?? 0) / 1000)}s`,
+      };
+    }
+
+    const config = rec.promptConfig;
+    if (!config) return { status: "error", message: "prompt thread has no config" };
+    const template = getPromptTemplate(config.templateId);
+    if (!template) return { status: "error", message: `no such prompt template: ${config.templateId}` };
+
+    const promptText = resolveTemplate(template, config.variables ?? {});
+    // Fire-and-forget like the create path; the result lands via the usual
+    // prompt_thread_result broadcast and the thread history.
+    void this.runPromptThreadDelivery(threadId, promptText).catch((err) => {
+      console.error(`prompt thread ${threadId} trigger delivery failed:`, err);
+    });
+    return { status: "accepted" };
+  }
+
   async renameThread(threadId: string, title: string): Promise<void> {
     await this.applyTitle(this.runtimes.get(threadId) ?? null, threadId, title);
   }
@@ -311,7 +389,7 @@ export class ThreadManager {
     if (!rec) throw new Error(`no such thread: ${threadId}`);
     // Keep the runtime in step so auto-titling never overwrites a chosen name.
     if (rt) rt.title = clean;
-    this.broadcast({ type: "thread_updated", thread: toMeta(rec) });
+    this.broadcast({ type: "thread_updated", thread: this.enrichMeta(rec) });
     return clean;
   }
 
@@ -341,6 +419,10 @@ export class ThreadManager {
 
     await threadsDb.deleteThread(threadId);
     this.removeSessionFile(rec.piSessionFile);
+    // Drop both the webhook bearer token and the public trigger token so a
+    // stale capability URL can no longer fire the (now-deleted) thread.
+    this.webhookTokens.delete(threadId);
+    this.webhookTokens.deleteTriggerToken(threadId);
     this.broadcast({ type: "thread_deleted", threadId });
   }
 
@@ -893,7 +975,7 @@ export class ThreadManager {
     if (rt.deleted) return;
     this.broadcast({ type: "status", threadId: rt.id, status: rt.status, mode: rt.mode });
     const rec = await threadsDb.getThread(rt.id);
-    if (rec) this.broadcast({ type: "thread_updated", thread: toMeta(rec) });
+    if (rec) this.broadcast({ type: "thread_updated", thread: this.enrichMeta(rec) });
   }
 
   private async maybeAutoTitle(rt: ThreadRuntime): Promise<void> {
@@ -904,7 +986,7 @@ export class ThreadManager {
     if (!title) return;
     rt.title = title;
     const rec = await threadsDb.updateThread(rt.id, { title });
-    if (rec) this.broadcast({ type: "thread_updated", thread: toMeta(rec) });
+    if (rec) this.broadcast({ type: "thread_updated", thread: this.enrichMeta(rec) });
   }
 
   async shutdown(): Promise<void> {
@@ -921,4 +1003,17 @@ export class ThreadManager {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}\n… (truncated)` : text;
+}
+
+/**
+ * Constant-time string comparison for trigger tokens. Falls back to a plain
+ * inequality check when the lengths differ (still single-bit, but the length
+ * itself is not secret for randomly generated tokens). Both inputs must be
+ * non-empty — callers gate on that first.
+ */
+function timingSafeEqualString(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
 }

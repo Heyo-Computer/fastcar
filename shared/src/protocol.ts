@@ -25,6 +25,8 @@ export interface ThreadMeta {
   status: ThreadStatus;
   archived: boolean;
   threadType: ThreadType;
+  /** Public, unauthenticated trigger URL for a prompt thread (`/pt/<id>`), or null for chat threads. */
+  publicUrl?: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
 }
@@ -38,6 +40,8 @@ export interface PromptThreadConfig {
   /** Webhook delivery status, set after creation runs the prompt. */
   webhookStatus: "pending" | "success" | "error" | "skipped";
   webhookResponse?: string;
+  /** Variables substituted into the template; stored so a trigger can re-resolve. */
+  variables?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------

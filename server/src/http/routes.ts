@@ -24,6 +24,7 @@ import { collectRepoStatuses, purgeRepo, PurgeRefusedError } from "../services/g
 import { searchMentions } from "../services/mentions.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { COMMAND_SPECS } from "../threads/commands.js";
+import type { ThreadManager } from "../threads/manager.js";
 import { callerFromRequest } from "./auth.js";
 import { loadPromptTemplates } from "../services/promptTemplates.js";
 import type { ArtifactService } from "../services/artifacts.js";
@@ -38,12 +39,18 @@ export interface RouteDeps {
   mcp?: McpManager;
   settings?: AppSettings;
   subagentSettings?: SubagentSettings;
+  /**
+   * Thread manager — required for the prompt-thread create endpoint (Feature 3).
+   * Optional so unit tests that only exercise artifact/subagent routes can omit
+   * it; the create endpoint returns 503 when it is absent.
+   */
+  manager?: ThreadManager;
 }
 
 export function registerRoutes(
   app: FastifyInstance,
   cfg: Config,
-  deps: RouteDeps = { artifacts: undefined!, email: undefined! },
+  deps: RouteDeps,
 ): void {
   app.get("/api/health", async () => ({ ok: true, mock: cfg.mock }));
 
@@ -250,6 +257,42 @@ export function registerRoutes(
   app.get("/api/prompt-templates", async (): Promise<PromptTemplatesResponse> => ({
     templates: loadPromptTemplates(),
   }));
+
+  /**
+   * POST /api/threads/prompt — create a prompt thread (admin only). Mirrors the
+   * `create_prompt_thread` WS message: resolve a template, run the LLM, POST the
+   * result to the webhook, and record delivery status. Returns the thread meta
+   * (with its public trigger URL).
+   */
+  app.post("/api/threads/prompt", async (req, reply) => {
+    if (!deps.manager) return reply.code(503).send({ error: "prompt threads not available" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    const body = req.body as {
+      title?: string;
+      templateId?: string;
+      variables?: Record<string, string>;
+      webhookUrl?: string;
+      webhookToken?: string;
+    } | null;
+    if (!body || !body.templateId || !body.webhookUrl) {
+      return reply.code(400).send({ error: "templateId and webhookUrl are required" });
+    }
+    try {
+      const thread = await deps.manager.createPromptThread({
+        title: body.title,
+        templateId: body.templateId,
+        variables: body.variables,
+        webhookUrl: body.webhookUrl,
+        webhookToken: body.webhookToken ?? "",
+      });
+      return reply.code(201).send({ thread });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = /no such prompt template|webhook URL invalid|rate limit/.test(message) ? 400 : 500;
+      return reply.code(code).send({ error: message });
+    }
+  });
 
   // -------------------------------------------------------------- settings
 
