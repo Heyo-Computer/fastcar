@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import "./env.js";
-import { REASONING_EFFORTS, type ReasoningEffort } from "@fastcar/shared";
+import { REASONING_EFFORTS, SUBAGENT_PROVIDERS, type ReasoningEffort, type SubagentProvider } from "@fastcar/shared";
 
 export interface Config {
   port: number;
@@ -21,6 +21,14 @@ export interface Config {
   transcribeModel: string;
   tavilyApiKey: string | undefined;
   openrouterBaseUrl: string;
+  /**
+   * Default provider the subagents run on when the runtime settings file has
+   * not pinned one. "openrouter" (the Pi built-in) or "omlx" (a self-hosted
+   * OpenAI-compatible endpoint).
+   */
+  subagentProvider: SubagentProvider;
+  /** OMLX (OpenAI-compatible) base URL; default http://localhost:8080/v1. */
+  omlxBaseUrl: string;
   inceptionBaseUrl: string;
   /** InceptionLabs chat model id the conductor runs on (INCEPTION_MODEL). */
   inceptionModel: string;
@@ -60,6 +68,16 @@ function reasoningEffortEnv(name: string, fallback: ReasoningEffort): ReasoningE
   const value = raw.toLowerCase() as ReasoningEffort;
   if (!REASONING_EFFORTS.includes(value)) {
     throw new Error(`${name} must be one of ${REASONING_EFFORTS.join(", ")} (got "${raw}")`);
+  }
+  return value;
+}
+
+function subagentProviderEnv(name: string, fallback: SubagentProvider): SubagentProvider {
+  const raw = env(name);
+  if (!raw) return fallback;
+  const value = raw.toLowerCase() as SubagentProvider;
+  if (!SUBAGENT_PROVIDERS.includes(value)) {
+    throw new Error(`${name} must be one of ${SUBAGENT_PROVIDERS.join(", ")} (got "${raw}")`);
   }
   return value;
 }
@@ -111,6 +129,8 @@ export function loadConfig(): Config {
     openrouterBaseUrl: mock
       ? `http://127.0.0.1:${mockPort}/api/v1`
       : "https://openrouter.ai/api/v1",
+    subagentProvider: subagentProviderEnv("SUBAGENT_PROVIDER", "openrouter"),
+    omlxBaseUrl: env("OMLX_BASE_URL") ?? "http://localhost:8080/v1",
     inceptionBaseUrl: mock
       ? `http://127.0.0.1:${mockPort}/v1`
       : "https://api.inceptionlabs.ai/v1",

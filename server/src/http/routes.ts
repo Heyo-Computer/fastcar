@@ -13,6 +13,8 @@ import type {
   PromptTemplatesResponse,
   SmtpSettingsRequest,
   SmtpSettingsResponse,
+  SubagentSettingsRequest,
+  SubagentSettingsResponse,
   ThreadHistoryResponse,
 } from "@fastcar/shared";
 import type { Config } from "../config.js";
@@ -28,12 +30,14 @@ import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
 import type { AppSettings } from "../services/appSettings.js";
+import type { SubagentSettings } from "../services/subagentSettings.js";
 
 export interface RouteDeps {
   artifacts: ArtifactService;
   email: EmailService;
   mcp?: McpManager;
   settings?: AppSettings;
+  subagentSettings?: SubagentSettings;
 }
 
 export function registerRoutes(
@@ -264,6 +268,28 @@ export function registerRoutes(
     if (!body || typeof body !== "object") return reply.code(400).send({ error: "invalid body" });
     try {
       return deps.settings.update(body);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ------------------------------------------------------- subagent models
+
+  /** GET /api/subagent-models — subagent provider + per-kind model overrides. */
+  app.get("/api/subagent-models", async (_req, reply): Promise<SubagentSettingsResponse | FastifyReply> => {
+    if (!deps.subagentSettings) return reply.code(404).send({ error: "subagent settings not available" });
+    return deps.subagentSettings.get();
+  });
+
+  /** POST /api/subagent-models — persist; the next subagent run picks it up. Admin only. */
+  app.post("/api/subagent-models", async (req, reply): Promise<SubagentSettingsResponse | FastifyReply> => {
+    if (!deps.subagentSettings) return reply.code(404).send({ error: "subagent settings not available" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    const body = req.body as SubagentSettingsRequest | null;
+    if (!body || typeof body !== "object") return reply.code(400).send({ error: "invalid body" });
+    try {
+      return deps.subagentSettings.update(body);
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
