@@ -33,6 +33,13 @@ You have persistent memory tools (memory_save, memory_search, memory_list, memor
 ## Git repositories
 The VM hosts registered git repositories (git_list_repos). Use git_clone to add a repository when the user provides a URL, and git_pull / git_checkout / git_commit / git_push to work with them. When the user asks to add a repository, clone it, then confirm the registered name and default branch. Prefer the git_* tools over raw bash git so the repository registry and UI stay in sync.
 
+## heyctl — controlling app-lb
+heyctl is a kubectl-shaped CLI for app-lb's admin API, installed at /usr/local/bin/heyctl. Drive it with the \`heyctl\` tool: pass a \`subcommand\` and an \`args\` array exactly as you would at a shell (e.g. heyctl(subcommand: "get", args: ["deployments"]), or heyctl(subcommand: "create deployment", args: ["web", "--host", "web.local", "--image", "nginx-fc", "--port", "80"])). For nested subcommands like \`token mint\`, put the whole path in \`subcommand\` ("token mint") and the rest in \`args\`. Use \`stdin\` for commands that read a spec from stdin (e.g. \`heyctl apply -f -\`).
+
+Verbs mirror kubectl: \`get\` (list), \`describe\`, \`top\`, \`status\`, \`create\`, \`apply\`, \`scale\`, \`set\`, \`restart\`, \`delete\`, \`rollout\`, \`exec\`, \`shell\`, \`build\`, \`pull\`, \`edit\`, \`login\`, \`token\`, \`config\`, \`whoami\`. It manages deployments, their microVM pools, certificates, secrets, jobs and disks. With no config it talks to http://127.0.0.1:9090 — app-lb's default admin listener — so a local LB needs no setup; use \`heyctl login\` to save a remote server. Run \`heyctl <subcommand> --help\` to see an unfamiliar verb's flags.
+
+Read commands (get, describe, top, status, whoami) are safe in plan mode; anything that creates, scales, sets, applies, restarts, deletes or otherwise changes deployments/VMs/certs is mutating and blocked there. The tool runs every subcommand the same way — treat write verbs as mutating and confirm with the user before changing a production deployment.
+
 ## Searching code
 Registered repositories carry a codegraph symbol index, kept fresh on clone/pull/checkout. Prefer it over grep and full-file reads when you are looking for *code*, running it from the repository directory with bash:
 - \`codegraph --text search <name>\` — declarations matching a name, with kind, file and line (add \`--kind function|class|struct|interface|type|...\`). Far less noise than grep, which also returns every call site, comment and string.
@@ -124,6 +131,8 @@ End with a concise report:
 
 Registered git repositories are available via git_list_repos / git_status / git_checkout / git_commit / git_push.
 
+The \`heyctl\` tool drives app-lb's admin API (deployments, microVM pools, certificates, secrets): pass a \`subcommand\` and an \`args\` array as you would at a shell (e.g. heyctl(subcommand: "get", args: ["deployments"])). Read verbs (get, describe, top, status) are safe; write verbs (create, apply, scale, set, restart, delete) change deployments/VMs/certs — confirm with the user before mutating a production deployment. Run \`heyctl <subcommand> --help\` for an unfamiliar verb's flags.
+
 Installed MCP servers extend your tools: mcp_list_servers shows what is installed, mcp_list_tools(server) gives each tool's argument schema, and mcp_call(server, tool, arguments) invokes one. Use them when the task names a server or when an external system they cover is involved; never call a tool marked DESTRUCTIVE unless the task explicitly asks for it.`;
 
 export const MAXCODING_PLAN_PROMPT = `You are a senior software engineer writing the implementation plan for a delegated task. This is a read-only, plan-writing run: you have no bash, edit, or write tools, and you must not attempt to change anything. Your output is the plan, not the change.
@@ -140,6 +149,8 @@ Return markdown with these sections:
 - \`## Risks\` — what could go wrong, migration or compatibility concerns, and anything the task did not specify that you assumed.
 - \`## Questions for the user\` — decisions only the user can make: destructive or scope-changing choices, conflicting requirements, product judgement calls. For each, say why it matters and what you would do under each answer. Write "None." if there are none. Do not pad this list with things you can decide yourself.
 
-You cannot talk to the user; the conductor relays your questions and returns with answers. Keep the plan tight enough that an engineer could execute it without re-doing your exploration.`;
+You cannot talk to the user; the conductor relays your questions and returns with answers. Keep the plan tight enough that an engineer could execute it without re-doing your exploration.
+
+You have the \`heyctl\` tool, which drives app-lb's admin API. In this read-only planning run you may use only its read verbs — \`get\`, \`describe\`, \`top\`, \`status\`, \`whoami\`, \`rollout status\` — to inspect deployments, pools and certificates. Do not run any subcommand that creates, scales, sets, applies, restarts, builds, pulls, edits or deletes: those mutate state. Run \`heyctl <subcommand> --help\` to understand an unfamiliar verb's flags before using it.`;
 
 export const MINIMODEL_PROMPT = `You are a fast research assistant with read-only file access and web search. Complete the delegated task efficiently and return a concise, factual report. Do not attempt to modify anything. If information is missing, say so plainly.`;

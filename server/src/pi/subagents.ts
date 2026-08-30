@@ -12,6 +12,10 @@ import type { Config } from "../config.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createBrowserCheckTool } from "../tools/browserCheck.js";
 import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
+import {
+  createHeyctlTools,
+  HEYCTL_TOOL_NAMES,
+} from "../tools/heyctl.js";
 import { createMcpTools, MCP_READONLY_TOOL_NAMES } from "../tools/mcp.js";
 import type { McpManager } from "../services/mcp.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
@@ -83,11 +87,18 @@ const SUBAGENT_TOOLS: Record<PoolKey, string[]> = {
   maxcoding: [
     "read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "browser_check",
     ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone" && n !== "git_purge"),
+    ...HEYCTL_TOOL_NAMES,
     ...MCP_READONLY_TOOL_NAMES, "mcp_call",
   ],
   // Planning maxcoding must not be able to change anything — no bash either,
   // since bash can mutate. This is what lets the conductor run it in plan mode.
-  "maxcoding:plan": ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
+  // heyctl is included because its read verbs (get, describe, top, status) are
+  // how a planning run inspects app-lb state; the tool itself cannot tell read
+  // from write, so the plan prompt forbids mutating subcommands there.
+  "maxcoding:plan": [
+    "read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS,
+    ...HEYCTL_TOOL_NAMES, ...MCP_READONLY_TOOL_NAMES,
+  ],
   minimodel: ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
 };
 
@@ -235,6 +246,7 @@ export class SubagentManager {
         createWebSearchTool(this.cfg),
         createBrowserCheckTool(this.cfg),
         ...createGitTools(this.cfg),
+        ...createHeyctlTools(),
         ...(this.mcp ? createMcpTools(this.mcp) : []),
       ],
       resourceLoader: loader,

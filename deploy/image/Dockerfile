@@ -109,6 +109,42 @@ RUN rustc --version \
     && strip target/release/codegraph \
     && ./target/release/codegraph --version
 
+# ---------------------------------------------------------------------------
+# heyctl — the kubectl-shaped CLI for app-lb's admin API, built here and copied
+# in as a single stripped binary the agents drive through the `heyctl` tool
+# (server/src/tools/heyctl.ts). It controls deployments, microVM pools,
+# certificates, secrets, jobs and disks, and runs commands inside a deployment's
+# VM (`exec`/`shell`) — the surface the agents need to operate app-lb without
+# shelling out to raw curl.
+#
+# Same throwaway-stage discipline as codegraph: only the binary crosses into the
+# rootfs, so the Rust toolchain costs build time and zero rootfs bytes. The
+# binary links glibc dynamically, so the builder is bookworm to match the runtime
+# base — the same constraint that pins codegraph's builder.
+#
+# HEYCTL_REF is pinned to the same commit as CODEGRAPH_REF for the same reason
+# (`heyvm mvm build` passes no --build-arg, so these defaults are the real
+# configuration) and the same convenience: the repo is public, the commit need
+# not be a branch tip. The heyctl crate lives at app-lb/heyctl/ inside the repo,
+# a member of the app-lb workspace (app-lb/Cargo.toml), so the build runs from
+# /src/app-lb with `-p heyctl` and the binary lands at
+# /src/app-lb/target/release/heyctl. --locked fails if Cargo.lock is stale, so
+# the pinned commit fully determines the binary.
+FROM rust:1.97-slim-bookworm AS heyctl
+ARG HEYCTL_REPO=https://github.com/Heyo-Computer/heyo-public.git
+ARG HEYCTL_REF=0df9faba2d70242a2e231b8d15cf04e0feb690b6
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+RUN git init /src \
+    && git -C /src remote add origin "$HEYCTL_REPO" \
+    && git -C /src fetch --depth 1 origin "$HEYCTL_REF" \
+    && git -C /src checkout FETCH_HEAD
+WORKDIR /src/app-lb
+RUN rustc --version \
+    && cargo build --release --locked -p heyctl \
+    && strip target/release/heyctl \
+    && ./target/release/heyctl --version
+
 FROM node:22-bookworm-slim
 
 # System deps, per heyvm image conventions plus fastcar's own needs:
@@ -162,6 +198,11 @@ COPY deploy/image/resolv.conf /etc/heyo/resolv.conf
 # it by bare name after a clone (services/git.ts).
 COPY --from=codegraph /src/codegraph/target/release/codegraph /usr/local/bin/codegraph
 
+# The app-lb admin CLI from the stage above. /usr/local/bin is on PATH for
+# `serverctl exec` and the agents' bash tool, and the server shells out to it
+# by bare name through the heyctl tool (tools/heyctl.ts).
+COPY --from=heyctl /src/app-lb/target/release/heyctl /usr/local/bin/heyctl
+
 # The application. Context is the repo root; .dockerignore keeps node_modules,
 # local state and build output out of the context so the install below is
 # reproducible inside the image.
@@ -188,6 +229,7 @@ RUN test -x /init.sh \
     && node --version \
     && git --version \
     && codegraph --version \
+    && heyctl --version \
     && chromium --version \
     && ls /usr/lib/postgresql/*/bin/initdb \
     && node_modules/.bin/tsx --version \
