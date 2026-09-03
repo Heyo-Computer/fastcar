@@ -14,8 +14,10 @@ mountpoint -q /workspace 2>/dev/null \
     && note "ok: postgres data dir on the data disk" \
     || note "warn: no local pg cluster (fine if DATABASE_URL is external)"
 
-PID=$(cat /workspace/fastcar.pid 2>/dev/null)
-[ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null \
+# /run, not /workspace: the pid file must not outlive the boot that wrote it
+# (see start.sh). The command line check is what makes the pid mean anything.
+PID=$(cat /run/fastcar.pid 2>/dev/null)
+[ -n "${PID:-}" ] && tr '\0' ' ' 2>/dev/null < "/proc/$PID/cmdline" | grep -q 'server/src/index.ts' \
     && note "ok: fastcar running (pid $PID)" \
     || bad "fastcar process not running"
 

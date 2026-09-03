@@ -10,8 +10,23 @@
 set -u
 
 LOG=/workspace/log/fastcar.log
-PIDFILE=/workspace/fastcar.pid
+# On the rootfs, deliberately. The rootfs is recopied from the image on every
+# cold boot, so a pid recorded here can only belong to *this* boot. It used to
+# live at /workspace/fastcar.pid, and under vm.workspace that directory is
+# captured when a VM retires and restored into its replacement — the pid file
+# travelled with it. PIDs are handed out in almost the same order every boot,
+# and the previous VM's server was forked at just the point in that sequence
+# where the replacement runs this script, so the number was often live again
+# (this script's own shell, heyvmd's log writer…). The guard below then said
+# "already running", nothing listened on $PORT, app-lb reaped the VM at
+# boot_timeout_secs, captured the same file, and the next replacement rolled
+# the same dice. (us2, 2026-09-03: "fastcar already running (pid 300)" from a
+# VM whose pid file was older than its own boot.)
+PIDFILE=/run/fastcar.pid
 mkdir -p /workspace/log
+# A snapshot taken from an older image still carries the stale copy. Drop it so
+# it stops travelling; nothing reads it any more.
+rm -f /workspace/fastcar.pid
 
 # With vm.workspace, /workspace is captured and rebuilt by app-lb as its own
 # user between VMs, so every file under it comes back owned by that uid. git
@@ -30,8 +45,22 @@ export FASTCAR_REPOS_DIR="${FASTCAR_REPOS_DIR:-/workspace/repos}"
 export DATABASE_URL="${DATABASE_URL:-postgres://fastcar:fastcar@127.0.0.1:5432/fastcar}"
 
 # Already running (warm start / repeated hook)? Leave it be.
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+#
+# "Running" means a live process whose command line is our server — `kill -0`
+# alone is satisfied by whatever process inherited the number. The health
+# probe covers the case with no usable pid file at all: a second server on a
+# port that already answers would only die on EADDRINUSE after racing the
+# first one through migrate().
+is_fastcar() {
+    [ -n "${1:-}" ] \
+        && tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline" | grep -q 'server/src/index.ts'
+}
+if is_fastcar "$(cat "$PIDFILE" 2>/dev/null)"; then
     echo "fastcar already running (pid $(cat "$PIDFILE"))"
+    exit 0
+fi
+if curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+    echo "something already answers /api/health on :${PORT}; not starting a second server"
     exit 0
 fi
 
