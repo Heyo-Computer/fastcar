@@ -13,6 +13,7 @@ import { buildModels } from "../pi/runtime.js";
 import { SubagentManager } from "../pi/subagents.js";
 import { ThreadManager } from "../threads/manager.js";
 import { EmailService } from "../services/emailService.js";
+import { WebhookTokenStore } from "../services/webhookTokens.js";
 import { startMockOpenAI } from "../dev/mock-openai.js";
 import { deleteThread, getThread } from "../db/threads.js";
 import type { ServerMessage } from "@fastcar/shared";
@@ -171,5 +172,125 @@ describe("prompt threads (Feature 3)", () => {
       }),
       /no such prompt template/,
     );
+  });
+});
+
+describe("prompt thread trigger (Feature 3)", () => {
+  let cfg: ReturnType<typeof loadConfig>;
+  let mockOpenAI: http.Server | undefined;
+  let webhook: MockWebhook;
+  let manager: ThreadManager;
+  let tokens: WebhookTokenStore;
+
+  before(async () => {
+    process.env.FASTCAR_MOCK = "1";
+    process.env.DATABASE_URL = DATABASE_URL;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    cfg = loadConfig();
+    mockOpenAI = cfg.mock ? await startMockOpenAI(cfg.mockPort) : undefined;
+    await migrate();
+    await getPool().query("DELETE FROM artifacts");
+    await getPool().query("DELETE FROM threads WHERE thread_type = 'prompt'");
+    webhook = await startMockHttpsWebhook();
+    const models = await buildModels(cfg);
+    const subagents = new SubagentManager(models, cfg);
+    const email = new EmailService(cfg);
+    manager = new ThreadManager(cfg, models, subagents, email);
+    // Same cfg => same on-disk token file the manager writes to.
+    tokens = new WebhookTokenStore(cfg);
+  });
+
+  after(async () => {
+    mockOpenAI?.close();
+    webhook.server.close();
+    await manager.shutdown().catch(() => {});
+    await closePool();
+  });
+
+  it("re-runs the prompt thread and POSTs again when given the correct trigger token", async () => {
+    const thread = await manager.createPromptThread({
+      templateId: "default",
+      variables: { prompt: "Say hi again." },
+      webhookUrl: webhook.url,
+      webhookToken: "bearer-secret-token",
+    });
+    // Wait for the initial creation delivery to land.
+    await waitFor(manager, "prompt_thread_result", (m) => m.threadId === thread.id, 15_000);
+    const initialCount = webhook.receivedAuth.length;
+
+    const triggerToken = tokens.getTriggerToken(thread.id);
+    assert.ok(triggerToken, "a trigger token was minted at creation");
+
+    // Public URL is exposed on the meta for prompt threads.
+    assert.equal(thread.publicUrl, `${cfg.publicUrl}/pt/${thread.id}`);
+
+    const result = await manager.triggerPromptThread(thread.id, triggerToken);
+    assert.equal(result.status, "accepted");
+
+    await waitFor(
+      manager,
+      "prompt_thread_result",
+      (m) => m.threadId === thread.id,
+      15_000,
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    // A second POST landed with the same bearer secret.
+    assert.equal(webhook.receivedAuth.length, initialCount + 1);
+    assert.equal(webhook.receivedAuth[webhook.receivedAuth.length - 1], "Bearer bearer-secret-token");
+
+    await manager.deleteThread(thread.id);
+    // Deletion clears the trigger token.
+    assert.equal(tokens.getTriggerToken(thread.id), "");
+  });
+
+  it("refuses a wrong trigger token", async () => {
+    const thread = await manager.createPromptThread({
+      templateId: "default",
+      variables: { prompt: "x" },
+      webhookUrl: webhook.url,
+      webhookToken: "tok",
+    });
+    await waitFor(manager, "prompt_thread_result", (m) => m.threadId === thread.id, 15_000);
+    const before = webhook.receivedAuth.length;
+
+    const result = await manager.triggerPromptThread(thread.id, "totally-wrong-token");
+    assert.equal(result.status, "unauthorized");
+    // No extra webhook call.
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(webhook.receivedAuth.length, before);
+
+    await manager.deleteThread(thread.id);
+  });
+
+  it("returns not_found for a missing thread or a chat thread", async () => {
+    const missing = await manager.triggerPromptThread("00000000-0000-0000-0000-000000000000", "x");
+    assert.equal(missing.status, "not_found");
+
+    const chat = await manager.createThread("act");
+    const res = await manager.triggerPromptThread(chat.id, "x");
+    assert.equal(res.status, "not_found");
+    await manager.deleteThread(chat.id);
+  });
+
+  it("rate-limits repeated triggers on the same thread", async () => {
+    const thread = await manager.createPromptThread({
+      templateId: "default",
+      variables: { prompt: "rate me" },
+      webhookUrl: webhook.url,
+      webhookToken: "tok",
+    });
+    await waitFor(manager, "prompt_thread_result", (m) => m.threadId === thread.id, 15_000);
+    const triggerToken = tokens.getTriggerToken(thread.id);
+    assert.ok(triggerToken);
+
+    // The limiter allows 5 calls / 60s; the 6th must be refused.
+    const statuses: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      const r = await manager.triggerPromptThread(thread.id, triggerToken);
+      statuses.push(r.status);
+    }
+    assert.ok(statuses.includes("rate_limited"), `expected a rate_limited among: ${statuses.join(",")}`);
+    await manager.deleteThread(thread.id);
   });
 });

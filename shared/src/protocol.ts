@@ -25,6 +25,8 @@ export interface ThreadMeta {
   status: ThreadStatus;
   archived: boolean;
   threadType: ThreadType;
+  /** Public, unauthenticated trigger URL for a prompt thread (`/pt/<id>`), or null for chat threads. */
+  publicUrl?: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
 }
@@ -38,6 +40,8 @@ export interface PromptThreadConfig {
   /** Webhook delivery status, set after creation runs the prompt. */
   webhookStatus: "pending" | "success" | "error" | "skipped";
   webhookResponse?: string;
+  /** Variables substituted into the template; stored so a trigger can re-resolve. */
+  variables?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +149,51 @@ export interface AppSettingsRequest {
   conductor?: {
     reasoningEffort?: ReasoningEffort;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Subagent models (Feature: configurable subagent models + OMLX provider)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which inference provider the subagents (maxcoding / minimodel) run on.
+ * `openrouter` is the Pi built-in OpenAI-compatible aggregator; `omlx` is a
+ * self-hosted OpenAI-compatible endpoint (default http://localhost:8080/v1).
+ * Defaults to `openrouter` when nothing is configured.
+ */
+export type SubagentProvider = "openrouter" | "omlx";
+export const SUBAGENT_PROVIDERS: readonly SubagentProvider[] = ["openrouter", "omlx"];
+
+/** One subagent's configurable model slug, or null to use the env default. */
+export interface SubagentModelEntry {
+  /** The model slug as the provider knows it, e.g. "anthropic/claude-sonnet-4.5". */
+  model: string | null;
+}
+
+/** GET /api/subagent-models — current subagent model configuration. */
+export interface SubagentSettingsResponse {
+  /** Active provider for both subagents. */
+  provider: SubagentProvider;
+  /** OMLX base URL (only meaningful when provider is "omlx"). */
+  omlxBaseUrl: string;
+  /** Per-kind model overrides; null model means fall back to the env default. */
+  maxcoding: SubagentModelEntry;
+  minimodel: SubagentModelEntry;
+  /** The env-baked defaults the UI could "reset" to. */
+  defaults: {
+    provider: SubagentProvider;
+    maxcodingModel: string;
+    minimodelModel: string;
+    omlxBaseUrl: string;
+  };
+}
+
+/** POST /api/subagent-models — partial; omitted fields keep their stored value. */
+export interface SubagentSettingsRequest {
+  provider?: SubagentProvider;
+  omlxBaseUrl?: string;
+  maxcoding?: SubagentModelEntry;
+  minimodel?: SubagentModelEntry;
 }
 
 /** A pending interaction that must survive page refresh (stored in threads.pending_json). */

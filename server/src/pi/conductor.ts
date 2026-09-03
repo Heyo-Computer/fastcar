@@ -21,6 +21,11 @@ import { createSubmitPlanTool, type SubmitPlanBridge } from "../tools/submitPlan
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createBrowserCheckTool } from "../tools/browserCheck.js";
 import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
+import {
+  createHeyctlTools,
+  HEYCTL_MUTATING_TOOLS,
+  HEYCTL_TOOL_NAMES,
+} from "../tools/heyctl.js";
 import { ARTIFACT_MUTATING_TOOLS, ARTIFACT_TOOL_NAMES, createArtifactTools } from "../tools/artifacts.js";
 import { createMcpTools, MCP_MUTATING_TOOLS, MCP_TOOL_NAMES } from "../tools/mcp.js";
 import type { McpManager } from "../services/mcp.js";
@@ -41,6 +46,7 @@ const MUTATING_TOOLS = new Set([
   "write",
   "memory_delete",
   ...GIT_MUTATING_TOOLS,
+  ...HEYCTL_MUTATING_TOOLS,
   ...ARTIFACT_MUTATING_TOOLS,
   ...MCP_MUTATING_TOOLS,
 ]);
@@ -120,6 +126,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       "memory_save", "memory_search", "memory_list", "memory_delete",
       "web_search", "browser_check", ...emailNames,
       ...GIT_TOOL_NAMES,
+      ...HEYCTL_TOOL_NAMES,
       ...artifactNames,
       ...mcpNames,
     ],
@@ -132,6 +139,7 @@ export async function createConductorSession(deps: ConductorDeps): Promise<Condu
       createBrowserCheckTool(cfg),
       ...emailTool,
       ...createGitTools(cfg),
+      ...createHeyctlTools(),
       ...artifactTools,
       ...mcpTools,
     ],

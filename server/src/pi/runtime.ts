@@ -1,7 +1,7 @@
 import path from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model, ThinkingLevel } from "@earendil-works/pi-ai";
-import type { ReasoningEffort } from "@fastcar/shared";
+import type { ReasoningEffort, SubagentProvider } from "@fastcar/shared";
 import type { Config } from "../config.js";
 
 export interface FastcarModels {
@@ -10,6 +10,12 @@ export interface FastcarModels {
   maxcoding: Model<any>;
   minimodel: Model<any>;
 }
+
+/** Provider id the Pi runtime uses for each subagent provider. */
+export const SUBAGENT_PROVIDER_IDS: Record<SubagentProvider, string> = {
+  openrouter: "openrouter",
+  omlx: "omlx",
+};
 
 /**
  * The conductor's user-facing effort setting expressed as the Pi thinking level
@@ -85,6 +91,15 @@ export async function buildModels(cfg: Config): Promise<FastcarModels> {
   if (cfg.mock) {
     registerMockOpenRouter(runtime, cfg);
   }
+
+  // Register the OMLX provider (OpenAI-compatible, self-hosted) with the
+  // boot-time base URL. The base URL can be changed at runtime via the
+  // subagent settings; resolveSubagentModel re-registers it on demand so the
+  // live setting always wins. Auth is resolved from OMLX_API_KEY at request
+  // time via the "$VAR" reference, mirroring OPENROUTER_API_KEY. In mock
+  // mode the provider is pointed at the local mock server so subagent runs
+  // need no real OMLX endpoint either.
+  registerOmlxProvider(runtime, cfg, cfg.mock ? cfg.inceptionBaseUrl : cfg.omlxBaseUrl);
 
   const conductor = runtime.getModel("inceptionlabs", cfg.inceptionModel);
   if (!conductor) throw new Error(`failed to register inceptionlabs/${cfg.inceptionModel}`);
@@ -168,4 +183,101 @@ function registerMockOpenRouter(runtime: ModelRuntime, cfg: Config): void {
     authHeader: true,
     models,
   });
+}
+
+/**
+ * Register (or replace) the OMLX provider with the given base URL. OMLX is an
+ * OpenAI-compatible endpoint, so it uses the same completions API and bearer
+ * auth as OpenRouter; the model catalog is thin overlays registered on demand
+ * by resolveSubagentModel.
+ */
+export function registerOmlxProvider(runtime: ModelRuntime, cfg: Config, baseUrl: string): void {
+  const providerId = cfg.mock ? "omlx-mock" : SUBAGENT_PROVIDER_IDS.omlx;
+  runtime.registerProvider(providerId, {
+    name: "OMLX",
+    baseUrl,
+    apiKey: "$OMLX_API_KEY",
+    api: "openai-completions",
+    authHeader: true,
+    models: collectProviderModels(runtime, providerId),
+  });
+}
+
+/** Collect a provider's existing model defs so re-registering keeps them. */
+function collectProviderModels(runtime: ModelRuntime, providerId: string) {
+  const provider = runtime.getProvider(providerId);
+  if (!provider) return [];
+  return runtime.getModels(providerId).map((m: Model<any>) => ({
+    id: m.id,
+    name: m.name,
+    reasoning: m.reasoning,
+    input: m.input as ("text" | "image")[],
+    contextWindow: m.contextWindow,
+    maxTokens: m.maxTokens,
+    cost: m.cost,
+    compat: m.compat,
+  }));
+}
+
+/**
+ * Resolve the Pi model for a subagent run, honouring the live settings:
+ * - provider picks the OpenRouter vs OMLX provider;
+ * - the per-kind model slug overrides the env default (null = env default);
+ * - unknown slugs are registered as thin overlays with sane defaults, exactly
+ *   like the env-slug path in getOrRegisterOpenRouterModel.
+ *
+ * Falls back to the boot-time models[kind] when settings are absent.
+ */
+export function resolveSubagentModel(
+  runtime: ModelRuntime,
+  cfg: Config,
+  kind: "maxcoding" | "minimodel",
+  opts: {
+    provider: SubagentProvider;
+    omlxBaseUrl: string;
+    model: string | null;
+  },
+): Model<any> {
+  const envDefault = kind === "maxcoding" ? cfg.maxcodingModel : cfg.minimodelModel;
+  const slug = opts.model ?? envDefault;
+
+  if (opts.provider === "omlx") {
+    const providerId = cfg.mock ? "omlx-mock" : SUBAGENT_PROVIDER_IDS.omlx;
+    // In mock mode, ignore the configured base URL and point at the local
+    // mock server (mirroring openrouter-mock) so keyless dev/test runs work.
+    const baseUrl = cfg.mock ? cfg.inceptionBaseUrl : opts.omlxBaseUrl;
+    // The base URL may have changed since buildModels ran; re-register to be
+    // sure the live setting is in effect. Re-registering replaces the config
+    // but preserves the model list via collectProviderModels.
+    if (runtime.getProvider(providerId)?.baseUrl !== baseUrl) {
+      registerOmlxProvider(runtime, cfg, baseUrl);
+    }
+    const existing = runtime.getModel(providerId, slug);
+    if (existing) return existing;
+    runtime.registerProvider(providerId, {
+      name: "OMLX",
+      baseUrl,
+      apiKey: "$OMLX_API_KEY",
+      api: "openai-completions",
+      authHeader: true,
+      models: [
+        ...collectProviderModels(runtime, providerId),
+        {
+          id: slug,
+          name: slug,
+          reasoning: false,
+          input: ["text"],
+          contextWindow: 200000,
+          maxTokens: 32000,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      ],
+    });
+    const model = runtime.getModel(providerId, slug);
+    if (!model) throw new Error(`failed to register OMLX model ${slug}`);
+    return model;
+  }
+
+  // openrouter: same thin-overlay path the env config already uses.
+  return getOrRegisterOpenRouterModel(runtime, cfg, slug);
 }

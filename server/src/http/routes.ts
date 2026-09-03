@@ -13,6 +13,8 @@ import type {
   PromptTemplatesResponse,
   SmtpSettingsRequest,
   SmtpSettingsResponse,
+  SubagentSettingsRequest,
+  SubagentSettingsResponse,
   ThreadHistoryResponse,
 } from "@fastcar/shared";
 import type { Config } from "../config.js";
@@ -22,24 +24,33 @@ import { collectRepoStatuses, purgeRepo, PurgeRefusedError } from "../services/g
 import { searchMentions } from "../services/mentions.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { COMMAND_SPECS } from "../threads/commands.js";
+import type { ThreadManager } from "../threads/manager.js";
 import { callerFromRequest } from "./auth.js";
 import { loadPromptTemplates } from "../services/promptTemplates.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
 import type { AppSettings } from "../services/appSettings.js";
+import type { SubagentSettings } from "../services/subagentSettings.js";
 
 export interface RouteDeps {
   artifacts: ArtifactService;
   email: EmailService;
   mcp?: McpManager;
   settings?: AppSettings;
+  subagentSettings?: SubagentSettings;
+  /**
+   * Thread manager — required for the prompt-thread create endpoint (Feature 3).
+   * Optional so unit tests that only exercise artifact/subagent routes can omit
+   * it; the create endpoint returns 503 when it is absent.
+   */
+  manager?: ThreadManager;
 }
 
 export function registerRoutes(
   app: FastifyInstance,
   cfg: Config,
-  deps: RouteDeps = { artifacts: undefined!, email: undefined! },
+  deps: RouteDeps,
 ): void {
   app.get("/api/health", async () => ({ ok: true, mock: cfg.mock }));
 
@@ -247,6 +258,42 @@ export function registerRoutes(
     templates: loadPromptTemplates(),
   }));
 
+  /**
+   * POST /api/threads/prompt — create a prompt thread (admin only). Mirrors the
+   * `create_prompt_thread` WS message: resolve a template, run the LLM, POST the
+   * result to the webhook, and record delivery status. Returns the thread meta
+   * (with its public trigger URL).
+   */
+  app.post("/api/threads/prompt", async (req, reply) => {
+    if (!deps.manager) return reply.code(503).send({ error: "prompt threads not available" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    const body = req.body as {
+      title?: string;
+      templateId?: string;
+      variables?: Record<string, string>;
+      webhookUrl?: string;
+      webhookToken?: string;
+    } | null;
+    if (!body || !body.templateId || !body.webhookUrl) {
+      return reply.code(400).send({ error: "templateId and webhookUrl are required" });
+    }
+    try {
+      const thread = await deps.manager.createPromptThread({
+        title: body.title,
+        templateId: body.templateId,
+        variables: body.variables,
+        webhookUrl: body.webhookUrl,
+        webhookToken: body.webhookToken ?? "",
+      });
+      return reply.code(201).send({ thread });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = /no such prompt template|webhook URL invalid|rate limit/.test(message) ? 400 : 500;
+      return reply.code(code).send({ error: message });
+    }
+  });
+
   // -------------------------------------------------------------- settings
 
   /** GET /api/settings — conductor model + reasoning effort. Nothing secret; any caller. */
@@ -264,6 +311,28 @@ export function registerRoutes(
     if (!body || typeof body !== "object") return reply.code(400).send({ error: "invalid body" });
     try {
       return deps.settings.update(body);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ------------------------------------------------------- subagent models
+
+  /** GET /api/subagent-models — subagent provider + per-kind model overrides. */
+  app.get("/api/subagent-models", async (_req, reply): Promise<SubagentSettingsResponse | FastifyReply> => {
+    if (!deps.subagentSettings) return reply.code(404).send({ error: "subagent settings not available" });
+    return deps.subagentSettings.get();
+  });
+
+  /** POST /api/subagent-models — persist; the next subagent run picks it up. Admin only. */
+  app.post("/api/subagent-models", async (req, reply): Promise<SubagentSettingsResponse | FastifyReply> => {
+    if (!deps.subagentSettings) return reply.code(404).send({ error: "subagent settings not available" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    const body = req.body as SubagentSettingsRequest | null;
+    if (!body || typeof body !== "object") return reply.code(400).send({ error: "invalid body" });
+    try {
+      return deps.subagentSettings.update(body);
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }

@@ -6,16 +6,22 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai";
 import type { StreamEvent, UsageSummary } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createBrowserCheckTool } from "../tools/browserCheck.js";
 import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
+import {
+  createHeyctlTools,
+  HEYCTL_TOOL_NAMES,
+} from "../tools/heyctl.js";
 import { createMcpTools, MCP_READONLY_TOOL_NAMES } from "../tools/mcp.js";
 import type { McpManager } from "../services/mcp.js";
+import type { SubagentSettings } from "../services/subagentSettings.js";
 import { translateSessionEvent, extractText, extractUsage } from "./events.js";
 import { MAXCODING_PLAN_PROMPT, MAXCODING_PROMPT, MINIMODEL_PROMPT } from "./prompts.js";
-import type { FastcarModels } from "./runtime.js";
+import { resolveSubagentModel, type FastcarModels } from "./runtime.js";
 
 export type SubagentKind = "maxcoding" | "minimodel";
 
@@ -81,11 +87,18 @@ const SUBAGENT_TOOLS: Record<PoolKey, string[]> = {
   maxcoding: [
     "read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "browser_check",
     ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone" && n !== "git_purge"),
+    ...HEYCTL_TOOL_NAMES,
     ...MCP_READONLY_TOOL_NAMES, "mcp_call",
   ],
   // Planning maxcoding must not be able to change anything — no bash either,
   // since bash can mutate. This is what lets the conductor run it in plan mode.
-  "maxcoding:plan": ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
+  // heyctl is included because its read verbs (get, describe, top, status) are
+  // how a planning run inspects app-lb state; the tool itself cannot tell read
+  // from write, so the plan prompt forbids mutating subcommands there.
+  "maxcoding:plan": [
+    "read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS,
+    ...HEYCTL_TOOL_NAMES, ...MCP_READONLY_TOOL_NAMES,
+  ],
   minimodel: ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
 };
 
@@ -149,6 +162,8 @@ export class SubagentManager {
     private readonly cfg: Config,
     /** MCP registry; when absent the mcp_* tools are simply not offered. */
     private readonly mcp?: McpManager,
+    /** Runtime subagent model settings; absent → use the boot-time models. */
+    private readonly subagentSettings?: SubagentSettings,
   ) {
     this.semaphores = {
       maxcoding: new Semaphore(2),
@@ -187,6 +202,21 @@ export class SubagentManager {
     }
   }
 
+  /**
+   * Resolve the Pi model for a subagent kind from the live settings, falling
+   * back to the boot-time models[kind] when no settings service is wired in.
+   * Re-read on every run so a POST /api/subagent-models is picked up live.
+   */
+  private resolveModel(kind: SubagentKind): Model<any> {
+    const s = this.subagentSettings;
+    if (!s) return this.models[kind];
+    return resolveSubagentModel(this.models.runtime, this.cfg, kind, {
+      provider: s.provider(),
+      omlxBaseUrl: s.omlxBaseUrl(),
+      model: kind === "maxcoding" ? s.maxcodingModel() : s.minimodelModel(),
+    });
+  }
+
   private async runInner(req: SubagentRunRequest): Promise<SubagentReport> {
     const { kind, task, taskId, signal, onEvent } = req;
     const pool = poolKey(kind, req.mode);
@@ -209,13 +239,14 @@ export class SubagentManager {
       cwd: this.cfg.workdir,
       agentDir,
       modelRuntime: this.models.runtime,
-      model: this.models[kind],
+      model: this.resolveModel(kind),
       thinkingLevel: "off",
       tools: SUBAGENT_TOOLS[pool],
       customTools: [
         createWebSearchTool(this.cfg),
         createBrowserCheckTool(this.cfg),
         ...createGitTools(this.cfg),
+        ...createHeyctlTools(),
         ...(this.mcp ? createMcpTools(this.mcp) : []),
       ],
       resourceLoader: loader,

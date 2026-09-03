@@ -41,6 +41,8 @@ function tempConfig(dataDir: string): Config {
     transcribeModel: "z",
     tavilyApiKey: undefined,
     openrouterBaseUrl: "",
+    subagentProvider: "openrouter",
+    omlxBaseUrl: "http://localhost:8080/v1",
     inceptionBaseUrl: "",
     inceptionModel: "mercury-2.5",
     inceptionMaxTokens: 16384,

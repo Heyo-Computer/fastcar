@@ -16,7 +16,8 @@
     ],
     "public_paths": [
       "/api/health",
-      "/artifacts/"
+      "/artifacts/",
+      "/pt/"
     ]
   },
   "vm": {

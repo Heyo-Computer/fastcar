@@ -10,9 +10,15 @@ import type { Config } from "../config.js";
  * each value encrypted with AES-256-GCM (the key is derived from the same
  * `FASTCAR_SECRET` used by the SMTP store). The token is never written to
  * Postgres and never returned to the client.
+ *
+ * Two kinds of token live in the same file:
+ *  - webhook tokens, keyed by thread id (the bearer secret POSTed to the webhook)
+ *  - trigger tokens, keyed by `trigger:<threadId>` (the capability URL secret
+ *    that lets an unauthenticated caller re-run a prompt thread via `/pt/<id>`)
  */
 interface TokenFile {
-  [threadId: string]: string; // base64 iv:ciphertext:tag
+  // base64 iv:ciphertext:tag; keys are threadId or trigger:<threadId>
+  [key: string]: string;
 }
 
 function filePath(cfg: Config): string {
@@ -64,6 +70,15 @@ function saveAll(cfg: Config, data: TokenFile): void {
   fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
+/** Prefix for trigger tokens in the store, namespaced apart from webhook tokens. */
+const TRIGGER_KEY = (threadId: string) => `trigger:${threadId}`;
+
+/** Generate a random trigger token (~32 url-safe chars) for a prompt thread. */
+export function generateTriggerToken(): string {
+  // 24 bytes -> 32 base64url chars; the capability is the (threadId, token) pair.
+  return crypto.randomBytes(24).toString("base64url");
+}
+
 export class WebhookTokenStore {
   constructor(private readonly cfg: Config) {}
 
@@ -81,6 +96,29 @@ export class WebhookTokenStore {
   delete(threadId: string): void {
     const all = loadAll(this.cfg);
     delete all[threadId];
+    saveAll(this.cfg, all);
+  }
+
+  // -------------------------------------------------------- trigger tokens
+
+  /** Store a public trigger token for a prompt thread under `trigger:<threadId>`. */
+  setTriggerToken(threadId: string, token: string): void {
+    const all = loadAll(this.cfg);
+    all[TRIGGER_KEY(threadId)] = encrypt(token, this.cfg);
+    saveAll(this.cfg, all);
+  }
+
+  /** Retrieve the stored trigger token for a prompt thread ("" when unset). */
+  getTriggerToken(threadId: string): string {
+    const all = loadAll(this.cfg);
+    const enc = all[TRIGGER_KEY(threadId)];
+    return enc ? decrypt(enc, this.cfg) : "";
+  }
+
+  /** Delete the trigger token for a prompt thread. */
+  deleteTriggerToken(threadId: string): void {
+    const all = loadAll(this.cfg);
+    delete all[TRIGGER_KEY(threadId)];
     saveAll(this.cfg, all);
   }
 }

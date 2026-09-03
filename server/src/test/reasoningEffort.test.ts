@@ -34,6 +34,8 @@ function tempConfig(dataDir: string): Config {
     transcribeModel: "z",
     tavilyApiKey: undefined,
     openrouterBaseUrl: `http://127.0.0.1:${MOCK_PORT}/api/v1`,
+    subagentProvider: "openrouter",
+    omlxBaseUrl: "http://localhost:8080/v1",
     inceptionBaseUrl: `http://127.0.0.1:${MOCK_PORT}/v1`,
     inceptionModel: "mercury-2.5",
     inceptionMaxTokens: 12345,

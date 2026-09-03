@@ -33,3 +33,41 @@ tools:
       message:
         type: string
         description: Status message (sent confirmation or error reason). Optional on success.
+  heyctl:
+    description: |
+      Run the heyctl CLI — a kubectl-shaped client for app-lb's admin API.
+      Controls deployments, their microVM pools, certificates, secrets, jobs
+      and disks, and runs commands inside a deployment's VM (exec, shell).
+      Read verbs (get, describe, top, status, whoami) are safe in plan mode;
+      write verbs (create, apply, scale, set, restart, delete) are mutating.
+    input:
+      subcommand:
+        type: string
+        description: |
+          heyctl subcommand (get, describe, create, apply, scale, set, restart,
+          delete, exec, shell, top, status, login, token, rollout, build, pull,
+          edit, config). For nested subcommands (e.g. `token mint`), put the
+          whole path here.
+      args:
+        type: array
+        items:
+          type: string
+        description: |
+          Arguments after the subcommand, one per element — flags and
+          positional args both go here.
+      stdin:
+        type: string
+        required: false
+        description: |
+          Optional string piped to heyctl's stdin (e.g. a spec body for
+          `heyctl apply -f -`). Omit for commands that take no input.
+    output:
+      text:
+        type: string
+        description: The command banner, stdout, stderr and exit code.
+      exitCode:
+        type: integer
+        description: heyctl's process exit code (null if the binary was missing or aborted).
+      truncated:
+        type: boolean
+        description: Whether stdout/stderr was truncated to its tail.
