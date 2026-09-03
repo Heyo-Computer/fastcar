@@ -133,7 +133,20 @@ RUN rustc --version \
 FROM rust:1.97-slim-bookworm AS heyctl
 ARG HEYCTL_REPO=https://github.com/Heyo-Computer/heyo-public.git
 ARG HEYCTL_REF=0df9faba2d70242a2e231b8d15cf04e0feb690b6
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+# git fetches the source; pkg-config and libssl-dev are here because this build
+# reaches OpenSSL and the slim Rust base carries neither. The chain is not
+# obvious from anything above: heyctl's default feature is `cli`, `cli` pulls
+# `artifact` (the `art serve` client behind `heyctl artifact push`), `artifact`
+# pulls ureq with `native-tls`, and that is openssl-sys. Its build script needs
+# pkg-config to locate the library and the headers to compile against; without
+# them the stage dies with a build-script `exit code: 101` pages deep in cargo
+# output, with nothing in the message naming TLS.
+#
+# Builder-stage only, so this costs zero rootfs bytes — but the binary that
+# crosses into the runtime links libssl.so.3/libcrypto.so.3 dynamically, which
+# is why the final stage names libssl3 in its apt line rather than relying on
+# curl and postgresql to keep dragging it in.
+RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN git init /src \
     && git -C /src remote add origin "$HEYCTL_REPO" \
@@ -154,6 +167,10 @@ FROM node:22-bookworm-slim
 #   ca-certificates — outbound TLS to InceptionLabs/OpenRouter/Tavily
 #   git             — the whole point of the repos integration
 #   postgresql      — local DB, data dir on /workspace (survives cold boots)
+#   libssl3         — heyctl links OpenSSL dynamically (ureq/native-tls, see the
+#                     heyctl stage). It also arrives transitively via curl and
+#                     postgresql; named here so a change to either cannot drop
+#                     it and leave `heyctl` dying on a missing .so in the guest
 #   curl            — start.sh/preflight health probes
 #   chromium        — headless browser behind the agents' browser_check tool
 #                     (tools/browserCheck.ts drives it via playwright-core, no
@@ -171,6 +188,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-liberation \
         git \
         iproute2 \
+        libssl3 \
         openssh-server \
         postgresql \
     && rm -rf /var/lib/apt/lists/*
