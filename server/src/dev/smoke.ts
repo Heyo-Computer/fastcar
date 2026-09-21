@@ -11,7 +11,9 @@ process.env.FASTCAR_MOCK ??= "1";
 import { loadConfig } from "../config.js";
 import { migrate } from "../db/migrate.js";
 import { closePool } from "../db/pool.js";
-import { createConductorSession } from "../pi/conductor.js";
+import { createManagedSession } from "../pi/agentSession.js";
+import type { ResolvedAgent } from "../services/agents.js";
+import { CONDUCTOR_DEFAULT_TOOLS } from "../tools/registry.js";
 import { translateSessionEvent } from "../pi/events.js";
 import { buildModels } from "../pi/runtime.js";
 import { SubagentManager } from "../pi/subagents.js";
@@ -35,10 +37,29 @@ console.log(
 const subagents = new SubagentManager(models, cfg);
 let submittedPlan: string | undefined;
 
-const { session } = await createConductorSession({
+// The CLI smoke run has no database, so it builds the builtin conductor's
+// resolved definition by hand rather than reading it from the agents table.
+const agent: ResolvedAgent = {
+  id: "00000000-0000-0000-0000-000000000001",
+  slug: "conductor",
+  name: "Conductor",
+  isBuiltin: true,
+  supportsPlanMode: true,
+  systemPrompt: null, // null = CONDUCTOR_BASE from prompts.ts
+  modelProvider: "inceptionlabs",
+  modelSlug: cfg.inceptionModel,
+  reasoningEffort: cfg.conductorReasoningEffort,
+  effortPinned: false,
+  maxTokens: null,
+  tools: [...CONDUCTOR_DEFAULT_TOOLS],
+  mcpServers: null,
+};
+
+const { session } = await createManagedSession({
   cfg,
   models,
   subagents,
+  agent,
   threadId: "00000000-0000-0000-0000-000000000000",
   getMode: () => mode,
   askBridge: {

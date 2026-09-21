@@ -1,7 +1,12 @@
 import path from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Model, ThinkingLevel } from "@earendil-works/pi-ai";
-import type { ReasoningEffort, SubagentProvider } from "@fastcar/shared";
+import type {
+  AgentModelProvider,
+  ModelsResponse,
+  ReasoningEffort,
+  SubagentProvider,
+} from "@fastcar/shared";
 import type { Config } from "../config.js";
 
 export interface FastcarModels {
@@ -115,7 +120,7 @@ export async function buildModels(cfg: Config): Promise<FastcarModels> {
  * user-specified slugs (MAXCODING_MODEL) may not be in it, so fall back to
  * registering the slug on a thin overlay provider with sane defaults.
  */
-function getOrRegisterOpenRouterModel(
+export function getOrRegisterOpenRouterModel(
   runtime: ModelRuntime,
   cfg: Config,
   slug: string,
@@ -242,42 +247,160 @@ export function resolveSubagentModel(
   const slug = opts.model ?? envDefault;
 
   if (opts.provider === "omlx") {
-    const providerId = cfg.mock ? "omlx-mock" : SUBAGENT_PROVIDER_IDS.omlx;
-    // In mock mode, ignore the configured base URL and point at the local
-    // mock server (mirroring openrouter-mock) so keyless dev/test runs work.
-    const baseUrl = cfg.mock ? cfg.inceptionBaseUrl : opts.omlxBaseUrl;
-    // The base URL may have changed since buildModels ran; re-register to be
-    // sure the live setting is in effect. Re-registering replaces the config
-    // but preserves the model list via collectProviderModels.
-    if (runtime.getProvider(providerId)?.baseUrl !== baseUrl) {
-      registerOmlxProvider(runtime, cfg, baseUrl);
-    }
-    const existing = runtime.getModel(providerId, slug);
-    if (existing) return existing;
-    runtime.registerProvider(providerId, {
-      name: "OMLX",
-      baseUrl,
-      apiKey: "$OMLX_API_KEY",
-      api: "openai-completions",
-      authHeader: true,
-      models: [
-        ...collectProviderModels(runtime, providerId),
-        {
-          id: slug,
-          name: slug,
-          reasoning: false,
-          input: ["text"],
-          contextWindow: 200000,
-          maxTokens: 32000,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        },
-      ],
-    });
-    const model = runtime.getModel(providerId, slug);
-    if (!model) throw new Error(`failed to register OMLX model ${slug}`);
-    return model;
+    return resolveOmlxModel(runtime, cfg, slug, opts.omlxBaseUrl);
   }
 
   // openrouter: same thin-overlay path the env config already uses.
   return getOrRegisterOpenRouterModel(runtime, cfg, slug);
+}
+
+/**
+ * Resolve an OMLX model by slug, honouring a base URL that may have changed
+ * since buildModels ran. Shared by the subagent settings path and per-agent
+ * model resolution so there is one implementation of the overlay dance.
+ */
+export function resolveOmlxModel(
+  runtime: ModelRuntime,
+  cfg: Config,
+  slug: string,
+  configuredBaseUrl: string,
+): Model<any> {
+  const providerId = cfg.mock ? "omlx-mock" : SUBAGENT_PROVIDER_IDS.omlx;
+  // In mock mode, ignore the configured base URL and point at the local mock
+  // server (mirroring openrouter-mock) so keyless dev/test runs work.
+  const baseUrl = cfg.mock ? cfg.inceptionBaseUrl : configuredBaseUrl;
+  // Re-register to be sure the live setting is in effect. Re-registering
+  // replaces the config but preserves the model list via collectProviderModels.
+  if (runtime.getProvider(providerId)?.baseUrl !== baseUrl) {
+    registerOmlxProvider(runtime, cfg, baseUrl);
+  }
+  const existing = runtime.getModel(providerId, slug);
+  if (existing) return existing;
+  runtime.registerProvider(providerId, {
+    name: "OMLX",
+    baseUrl,
+    apiKey: "$OMLX_API_KEY",
+    api: "openai-completions",
+    authHeader: true,
+    models: [
+      ...collectProviderModels(runtime, providerId),
+      {
+        id: slug,
+        name: slug,
+        reasoning: false,
+        input: ["text"],
+        contextWindow: 200000,
+        maxTokens: 32000,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ],
+  });
+  const model = runtime.getModel(providerId, slug);
+  if (!model) throw new Error(`failed to register OMLX model ${slug}`);
+  return model;
+}
+
+
+// ---------------------------------------------------------------------------
+// Per-agent model resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the Pi model for a user-created agent.
+ *
+ * This is resolveSubagentModel with the kind-specific env fallback lifted out,
+ * so both callers share one path: unknown slugs land on a thin overlay
+ * provider with sane defaults, exactly as the env-configured slugs already do.
+ */
+export function resolveAgentModel(
+  runtime: ModelRuntime,
+  cfg: Config,
+  agent: { modelProvider: AgentModelProvider; modelSlug: string },
+): Model<any> {
+  switch (agent.modelProvider) {
+    case "inceptionlabs": {
+      // The InceptionLabs provider registers exactly one model, so an agent
+      // pointing at a different slug here is a configuration error rather than
+      // something to silently overlay.
+      const model = runtime.getModel("inceptionlabs", agent.modelSlug);
+      if (model) return model;
+      throw new Error(
+        `inceptionlabs/${agent.modelSlug} is not registered; this server runs INCEPTION_MODEL=${cfg.inceptionModel}`,
+      );
+    }
+    case "omlx":
+      return resolveOmlxModel(runtime, cfg, agent.modelSlug, cfg.omlxBaseUrl);
+    case "openrouter":
+    default:
+      return getOrRegisterOpenRouterModel(runtime, cfg, agent.modelSlug);
+  }
+}
+
+/**
+ * What the agent builder may choose from.
+ *
+ * `reasoningCapable` matters: Pi only emits reasoning_effort for models flagged
+ * reasoning-capable, and unknown OpenRouter/OMLX slugs are registered as
+ * overlays with `reasoning: false` — so a per-agent effort on one of those is
+ * silently ignored. The UI greys the control out rather than pretending.
+ */
+export function listAgentModels(runtime: ModelRuntime, cfg: Config): ModelsResponse {
+  const inception = runtime.getModels("inceptionlabs").map((m: Model<any>) => ({
+    provider: "inceptionlabs" as const,
+    slug: m.id,
+    label: m.name,
+    reasoningCapable: Boolean(m.reasoning),
+    contextWindow: m.contextWindow,
+  }));
+
+  const orProviderId = cfg.mock ? "openrouter-mock" : "openrouter";
+  const seen = new Set<string>();
+  const openrouter = [
+    ...runtime.getModels(orProviderId),
+    ...runtime.getModels("openrouter-extra"),
+  ]
+    .filter((m: Model<any>) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
+    .map((m: Model<any>) => ({
+      provider: "openrouter" as const,
+      slug: m.id,
+      label: m.name,
+      reasoningCapable: Boolean(m.reasoning),
+      contextWindow: m.contextWindow,
+    }));
+
+  const omlxProviderId = cfg.mock ? "omlx-mock" : SUBAGENT_PROVIDER_IDS.omlx;
+  const omlx = runtime.getModels(omlxProviderId).map((m: Model<any>) => ({
+    provider: "omlx" as const,
+    slug: m.id,
+    label: m.name,
+    reasoningCapable: Boolean(m.reasoning),
+    contextWindow: m.contextWindow,
+  }));
+
+  return {
+    providers: [
+      {
+        id: "inceptionlabs",
+        label: "InceptionLabs",
+        // One registered model; a free-text slug here would just fail at run time.
+        allowsArbitrarySlug: false,
+        configured: cfg.mock || Boolean(process.env.INCEPTION_API_KEY),
+        models: inception,
+      },
+      {
+        id: "openrouter",
+        label: "OpenRouter",
+        allowsArbitrarySlug: true,
+        configured: cfg.mock || Boolean(process.env.OPENROUTER_API_KEY),
+        models: openrouter,
+      },
+      {
+        id: "omlx",
+        label: "OMLX (self-hosted)",
+        allowsArbitrarySlug: true,
+        configured: cfg.mock || Boolean(process.env.OMLX_API_KEY),
+        models: omlx,
+      },
+    ],
+  };
 }

@@ -21,6 +21,9 @@ import { EmailService } from "./services/emailService.js";
 import { AppSettings } from "./services/appSettings.js";
 import { SubagentSettings } from "./services/subagentSettings.js";
 import { McpManager } from "./services/mcp.js";
+import { AgentService } from "./services/agents.js";
+import { Scheduler } from "./services/scheduler.js";
+import { WebhookTokenStore } from "./services/webhookTokens.js";
 import { startMockOpenAI } from "./dev/mock-openai.js";
 
 const cfg = loadConfig();
@@ -37,15 +40,27 @@ const subagents = new SubagentManager(models, cfg, mcp, subagentSettings);
 const artifacts = new ArtifactService(cfg);
 const email = new EmailService(cfg);
 const settings = new AppSettings(cfg);
-const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp, settings);
+const agents = new AgentService(cfg, settings, mcp);
+// New deps ride in a trailing options object: the ThreadManager is constructed
+// with four positional args in three tests, and growing the positional list
+// would break them for no reason.
+const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp, settings, {
+  agents,
+});
+const scheduler = new Scheduler(manager, agents, new WebhookTokenStore(cfg));
+manager.attachScheduler(scheduler);
 // Installed servers reconnect in the background; a broken one shows as "error" in the panel.
 await mcp.start();
+// Unwedges schedules left mid-run by a previous process, then starts ticking.
+await scheduler.start();
 
 const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);
 await app.register(fastifyMultipart);
 
-registerRoutes(app, cfg, { artifacts, email, mcp, settings, subagentSettings, manager });
+registerRoutes(app, cfg, {
+  artifacts, email, mcp, settings, subagentSettings, manager, agents, models, scheduler,
+});
 // Public, unauthenticated artifact pages (see deploy/fastcar.json auth.public_paths).
 registerPublicArtifactRoutes(app, artifacts);
 // Public, unauthenticated prompt-thread trigger (`/pt/<id>`).
@@ -69,6 +84,7 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   app.log.info(`${signal} received, shutting down`);
+  scheduler.stop();
   await manager.shutdown().catch(() => {});
   await mcp.shutdown().catch(() => {});
   await app.close().catch(() => {});

@@ -10,7 +10,21 @@ const SERVER_PARAM = Type.String({ description: "Name of an installed MCP server
  * (its tool registry is fixed per session); instead the model lists a server's
  * tools with their schemas and invokes them through mcp_call.
  */
-export function createMcpTools(mcp: McpManager) {
+export function createMcpTools(mcp: McpManager, allowedServers?: readonly string[]) {
+  /**
+   * An agent may be granted a subset of the installed MCP servers. The subset
+   * has to be enforced where the call happens, not only by leaving servers out
+   * of the system prompt — the model can name any string. `undefined` means no
+   * restriction, which is what every caller passed before per-agent subsets
+   * existed.
+   */
+  const allowSet = allowedServers ? new Set(allowedServers) : null;
+  const denied = (server: string): string | null =>
+    !allowSet || allowSet.has(server)
+      ? null
+      : `MCP server "${server}" is not available to this agent. Allowed: ${
+          [...allowSet].join(", ") || "(none)"
+        }.`;
   const install = defineTool({
     name: "mcp_install",
     label: "Install MCP Server",
@@ -71,6 +85,8 @@ export function createMcpTools(mcp: McpManager) {
       "Stop an installed MCP server, drop it from the registry and delete its install directory. Confirm with the user (ask_user) unless they explicitly asked for the removal.",
     parameters: Type.Object({ server: SERVER_PARAM }),
     execute: async (_id, params) => {
+      const block = denied(params.server);
+      if (block) throw new Error(block);
       const r = await mcp.remove(params.server);
       return {
         content: [{ type: "text", text: `Removed MCP server "${r.name}"${r.path ? ` and deleted ${r.path}` : ""}.` }],
@@ -85,7 +101,10 @@ export function createMcpTools(mcp: McpManager) {
     description: "List the installed MCP servers with their connection state and tool names.",
     parameters: Type.Object({}),
     execute: async () => {
-      const statuses = await mcp.statuses();
+      const all = await mcp.statuses();
+      // Listing a server the agent cannot call would just invite a refused
+      // mcp_call, so the subset applies here too.
+      const statuses = allowSet ? all.filter((s) => allowSet.has(s.name)) : all;
       const text = statuses.length
         ? statuses
             .map((s) => {
@@ -105,6 +124,8 @@ export function createMcpTools(mcp: McpManager) {
       "List the tools an installed MCP server offers, with descriptions and JSON-schema argument definitions. Starts the server if it is not running.",
     parameters: Type.Object({ server: SERVER_PARAM }),
     execute: async (_id, params) => {
+      const block = denied(params.server);
+      if (block) throw new Error(block);
       const tools = await mcp.listTools(params.server);
       const text = tools.length
         ? tools
@@ -138,6 +159,8 @@ export function createMcpTools(mcp: McpManager) {
       ),
     }),
     execute: async (_id, params, signal) => {
+      const block = denied(params.server);
+      if (block) throw new Error(block);
       const text = await mcp.callTool(
         params.server,
         params.tool,

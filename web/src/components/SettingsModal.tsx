@@ -7,6 +7,9 @@ import {
 } from "@fastcar/shared";
 import { useStore } from "../state/store.ts";
 import { ModalShell } from "./AddArtifactModal.tsx";
+import { RepoPanel } from "./RepoPanel.tsx";
+import { McpPanel } from "./McpPanel.tsx";
+import { SubagentModelsPanel } from "./SubagentModelsPanel.tsx";
 
 const EFFORT_HELP: Record<ReasoningEffort, string> = {
   instant: "lowest latency — simple tasks, quick replies",
@@ -22,8 +25,11 @@ const EFFORT_HELP: Record<ReasoningEffort, string> = {
  * set and the caller is not an admin; in single-user dev mode everything is
  * editable.
  */
+type SettingsTab = "general" | "workers" | "repos" | "mcp" | "email";
+
 export function SettingsModal() {
   const setModal = useStore((s) => s.setModal);
+  const [tab, setTab] = useState<SettingsTab>("general");
   const lastSlashResult = useStore((s) => s.lastSlashResult);
 
   const [conductor, setConductor] = useState<AppSettingsResponse["conductor"] | null>(null);
@@ -140,8 +146,8 @@ export function SettingsModal() {
     }
   };
 
-  return (
-    <ModalShell title="Settings" onClose={() => setModal("none")}>
+  const general = (
+    <>
       <SectionTitle>Conductor model</SectionTitle>
       <p className="text-[0.72rem] text-ink-faint">
         {conductor ? (
@@ -184,6 +190,11 @@ export function SettingsModal() {
         </button>
       </div>
 
+    </>
+  );
+
+  const emailTab = (
+    <>
       <SectionTitle>SMTP</SectionTitle>
       <p className="text-[0.72rem] text-ink-faint">
         SMTP credentials are stored encrypted at rest on the server. The password is
@@ -276,6 +287,36 @@ export function SettingsModal() {
           {busy ? "Saving…" : "Save SMTP"}
         </button>
       </div>
+    </>
+  );
+
+  const TABS = [
+    { id: "general", label: "General", body: general },
+    { id: "workers", label: "Workers", body: <SubagentModelsPanel /> },
+    { id: "repos", label: "Repos", body: <RepoPanel /> },
+    { id: "mcp", label: "MCP", body: <McpPanel /> },
+    { id: "email", label: "Email", body: emailTab },
+  ] as const;
+
+  return (
+    <ModalShell title="Settings" onClose={() => setModal("none")}>
+      <div className="-mt-1 flex gap-1 border-b border-border pb-2">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={
+              "rounded-lg px-2.5 py-1 text-[0.75rem] " +
+              (tab === t.id
+                ? "bg-panel-2 text-ink"
+                : "text-ink-faint hover:bg-panel-2/60 hover:text-ink-dim")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {TABS.find((t) => t.id === tab)?.body}
     </ModalShell>
   );
 }

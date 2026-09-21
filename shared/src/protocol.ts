@@ -6,7 +6,27 @@
 
 export type ThreadMode = "plan" | "act";
 export type ThreadStatus = "idle" | "running" | "awaiting_input" | "awaiting_approval";
-export type AgentName = "conductor" | "maxcoding" | "minimodel";
+/**
+ * The built-in delegation pools (agents.yaml). Not user-creatable: they own no
+ * threads, no inbox rows and no schedules — they only run inside a parent
+ * agent's `run_subagent` call.
+ */
+export type SubagentName = "maxcoding" | "minimodel";
+
+/**
+ * Who produced an event: a top-level agent's slug, or a SubagentName. This is
+ * the `events.agent` column value, which is plain `text` with no CHECK, so
+ * user-created agent slugs need no migration.
+ *
+ * Deliberately `string` rather than a union — agents are rows in Postgres, so
+ * the set is not knowable at compile time. Nothing keys a Record off this type
+ * and nothing switches exhaustively on it; the UI decides whether an event
+ * nests under a subagent card from `taskId`, never from this field.
+ */
+export type AgentName = string;
+
+/** Slug of the seeded built-in agent that owns every pre-existing thread. */
+export const BUILTIN_AGENT_SLUG = "conductor";
 
 /**
  * The kind of thread. "chat" is the normal interactive thread; "prompt" runs
@@ -18,6 +38,13 @@ export type AgentName = "conductor" | "maxcoding" | "minimodel";
  */
 export type ThreadType = "chat" | "prompt";
 
+/**
+ * How a thread was started. Separate from ThreadType, which is CHECK-constrained
+ * in the database and asserted in the prompt-thread tests — a scheduled run is
+ * an ordinary chat thread with source "schedule".
+ */
+export type ThreadSource = "chat" | "prompt" | "schedule" | "trigger";
+
 export interface ThreadMeta {
   id: string;
   title: string;
@@ -25,6 +52,17 @@ export interface ThreadMeta {
   status: ThreadStatus;
   archived: boolean;
   threadType: ThreadType;
+  /** Owning agent; null on threads that predate agents (they render as the builtin). */
+  agentId?: string | null;
+  /** How the thread started: typed by a user, a prompt template, cron, or a public trigger. */
+  source?: ThreadSource;
+  /** The schedule whose firing created this thread, when there was one. */
+  scheduleId?: string | null;
+  /** Inbox projection: the latest reply and whether it has been read. */
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  /** Derived, never stored — see db/threads.ts isUnread(). */
+  unread?: boolean;
   /** Public, unauthenticated trigger URL for a prompt thread (`/pt/<id>`), or null for chat threads. */
   publicUrl?: string | null;
   createdAt: string; // ISO
@@ -196,6 +234,222 @@ export interface SubagentSettingsRequest {
   minimodel?: SubagentModelEntry;
 }
 
+// ---------------------------------------------------------------------------
+// Agents (user-created thread owners)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an agent's model comes from. `inceptionlabs` exposes exactly one
+ * registered model (INCEPTION_MODEL), so the builder fixes the slug there;
+ * the other two accept an arbitrary slug via Pi's thin-overlay registration.
+ */
+export type AgentModelProvider = "inceptionlabs" | "openrouter" | "omlx";
+export const AGENT_MODEL_PROVIDERS: readonly AgentModelProvider[] = [
+  "inceptionlabs",
+  "openrouter",
+  "omlx",
+];
+
+/** Category a tool falls into, for grouping the agent builder's checklist. */
+export type ToolCategory =
+  | "filesystem" | "shell" | "delegation" | "interaction" | "memory"
+  | "web" | "git" | "ops" | "artifacts" | "mcp" | "email";
+
+/** One row of GET /api/tools. */
+export interface ToolInfoRow {
+  name: string;
+  label: string;
+  description: string;
+  category: ToolCategory;
+  /** Blocked in plan mode. */
+  mutating: boolean;
+  /** Forced on for every agent; the builder shows it checked and disabled. */
+  alwaysOn: boolean;
+  /** False when this server lacks the dependency the tool needs. */
+  available: boolean;
+  unavailableReason?: string;
+}
+
+export interface ToolsResponse {
+  tools: ToolInfoRow[];
+}
+
+/**
+ * An agent as the UI sees it. Null `systemPrompt` / `modelProvider` /
+ * `modelSlug` / `tools` occur only on a builtin and mean "resolved from code";
+ * `resolved` carries what that actually works out to, so the builder can show
+ * the effective configuration without duplicating the fallback logic.
+ */
+export interface AgentDef {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  avatar: string | null;
+  systemPrompt: string | null;
+  modelProvider: AgentModelProvider | null;
+  modelSlug: string | null;
+  /** Null = follow the global ⚙ reasoning-effort setting. */
+  reasoningEffort: ReasoningEffort | null;
+  maxTokens: number | null;
+  tools: string[] | null;
+  /** Null = every installed MCP server. */
+  mcpServers: string[] | null;
+  supportsPlanMode: boolean;
+  isBuiltin: boolean;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** The effective configuration after code defaults are applied. */
+  resolved: {
+    modelProvider: AgentModelProvider;
+    modelSlug: string;
+    reasoningEffort: ReasoningEffort;
+    tools: string[];
+    /** Null still means "all installed servers". */
+    mcpServers: string[] | null;
+  };
+}
+
+/** POST /api/agents body; PATCH accepts the same fields, all optional. */
+export interface AgentDraft {
+  slug?: string;
+  name: string;
+  description?: string;
+  avatar?: string | null;
+  systemPrompt: string;
+  modelProvider: AgentModelProvider;
+  modelSlug: string;
+  reasoningEffort?: ReasoningEffort | null;
+  maxTokens?: number | null;
+  tools: string[];
+  mcpServers?: string[] | null;
+  supportsPlanMode?: boolean;
+}
+
+export interface AgentsResponse {
+  agents: AgentDef[];
+}
+
+/** One selectable model in the agent builder. */
+export interface ModelOption {
+  provider: AgentModelProvider;
+  slug: string;
+  label: string;
+  /**
+   * False means a per-agent reasoning effort would be silently ignored — Pi
+   * only emits reasoning_effort for models flagged reasoning-capable, and
+   * unknown OpenRouter slugs register as overlays with reasoning: false.
+   */
+  reasoningCapable: boolean;
+  contextWindow: number;
+}
+
+export interface ModelsResponse {
+  providers: Array<{
+    id: AgentModelProvider;
+    label: string;
+    /** True when the user may type a slug this server has never seen. */
+    allowsArbitrarySlug: boolean;
+    /** True when the provider's API key is configured. */
+    configured: boolean;
+    models: ModelOption[];
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+
+export type ScheduleStatus = "ok" | "error" | "skipped" | "running";
+
+export interface Schedule {
+  id: string;
+  agentId: string;
+  name: string;
+  /** What the agent is told when the schedule fires. */
+  prompt: string;
+  /** Five-field cron expression. */
+  cron: string;
+  /** IANA zone, e.g. "America/Los_Angeles". */
+  timezone: string;
+  mode: ThreadMode;
+  enabled: boolean;
+  /** After downtime: fire once and re-base (false), or replay missed slots (true). */
+  catchUp: boolean;
+  webhookUrl: string | null;
+  webhookTokenSet: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunThreadId: string | null;
+  lastStatus: ScheduleStatus | null;
+  lastError: string | null;
+  /** The next few firings, so the form can show what the cron actually means. */
+  nextRuns?: string[];
+}
+
+export interface ScheduleDraft {
+  agentId: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone?: string;
+  mode?: ThreadMode;
+  enabled?: boolean;
+  catchUp?: boolean;
+  webhookUrl?: string | null;
+  webhookToken?: string;
+}
+
+export interface SchedulesResponse {
+  schedules: Schedule[];
+}
+
+/** GET /api/schedules/preview?cron=&timezone= — validates and explains a cron. */
+export interface CronPreviewResponse {
+  valid: boolean;
+  error?: string;
+  nextRuns: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Inbox
+// ---------------------------------------------------------------------------
+
+/** One row of the inbox: a thread, its latest reply, and what it needs. */
+export interface InboxItem {
+  threadId: string;
+  title: string;
+  status: ThreadStatus;
+  mode: ThreadMode;
+  source: ThreadSource;
+  scheduleId: string | null;
+  /** Null only for threads whose agent row was deleted out from under them. */
+  agentId: string | null;
+  agentSlug: string;
+  agentName: string;
+  agentAvatar: string | null;
+  /** Truncated latest assistant message, or the app's own status line. */
+  preview: string;
+  lastMessageAt: string | null;
+  unread: boolean;
+  /** awaiting_input or awaiting_approval — the thread is blocked on the user. */
+  needsYou: boolean;
+  error: string | null;
+  /** Up to three of the thread's most recent artifacts, for a one-click open. */
+  artifacts: Array<{ id: string; name: string; url: string }>;
+}
+
+/** GET /api/inbox */
+export interface InboxResponse {
+  items: InboxItem[];
+  unreadByAgent: Record<string, number>;
+  totalUnread: number;
+}
+
+/** What the inbox list is filtered to. */
+export type InboxFilter = "all" | "unread" | "needs_you";
+
 /** A pending interaction that must survive page refresh (stored in threads.pending_json). */
 export type PendingInteraction =
   | { kind: "question"; questionId: string; prompt: string; options?: string[] }
@@ -357,7 +611,7 @@ export type ClientMessage =
   | { type: "prompt"; threadId: string; text: string }
   /** Run a server-scoped slash command against a thread. */
   | { type: "command"; threadId: string; name: string; args?: string }
-  | { type: "create_thread"; mode?: ThreadMode }
+  | { type: "create_thread"; mode?: ThreadMode; agentId?: string }
   /** Create a prompt thread (Feature 3): resolve a template, run the LLM, POST the result to the webhook. */
   | {
       type: "create_prompt_thread";
@@ -375,6 +629,9 @@ export type ClientMessage =
   | { type: "approve_plan"; threadId: string }
   | { type: "reject_plan"; threadId: string; feedback: string }
   | { type: "abort"; threadId: string }
+  /** Mark a thread read (the inbox's own affordance; opening one also marks it). */
+  | { type: "mark_read"; threadId: string }
+  | { type: "mark_all_read"; agentId?: string }
   | { type: "steer"; threadId: string; text: string }
   /** Ask the agent to clone a repository into the VM (routed through the conductor). */
   | { type: "add_repo"; url: string; name?: string; threadId?: string }
@@ -411,6 +668,16 @@ export type ServerMessage =
   | { type: "repos_updated"; repos: RepoStatus[] }
   /** The set of installed MCP servers, or one of their connection states, changed. */
   | { type: "mcp_servers_updated"; servers: McpServerStatus[] }
+  /** An agent was created, edited or archived. */
+  | { type: "agents_updated"; agents: AgentDef[] }
+  /**
+   * Unread counts changed. Per-row updates ride the existing thread_updated
+   * broadcast; only the aggregate needs its own message, since the client
+   * cannot derive it without holding every thread.
+   */
+  | { type: "inbox_counts"; unreadByAgent: Record<string, number>; totalUnread: number }
+  /** A schedule was created, edited, fired or disabled. */
+  | { type: "schedules_updated"; schedules: Schedule[] }
   /** An artifact on the thread was created, updated or deleted (e.g. by the agent). */
   | { type: "artifacts_updated"; threadId: string }
   /** Result of a prompt thread's webhook delivery (Feature 3). */

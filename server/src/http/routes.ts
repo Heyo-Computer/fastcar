@@ -1,5 +1,8 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
+  CronPreviewResponse,
+  InboxFilter,
+  InboxResponse,
   AppSettingsRequest,
   AppSettingsResponse,
   ArtifactNode,
@@ -19,11 +22,21 @@ import type {
 } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { listEvents } from "../db/events.js";
-import { getThread, listThreads, toMeta } from "../db/threads.js";
+import { getThread, listThreads } from "../db/threads.js";
+import { threadMeta } from "../services/threadMeta.js";
+import { inboxCounts, listInbox } from "../db/inbox.js";
+import { listArtifactsForAgent } from "../db/artifacts.js";
+import {
+  previewRuns,
+  ScheduleValidationError,
+  validateCron,
+  type Scheduler,
+} from "../services/scheduler.js";
 import { collectRepoStatuses, purgeRepo, PurgeRefusedError } from "../services/git.js";
 import { searchMentions } from "../services/mentions.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { COMMAND_SPECS } from "../threads/commands.js";
+import { listTools } from "../tools/registry.js";
 import type { ThreadManager } from "../threads/manager.js";
 import { callerFromRequest } from "./auth.js";
 import { loadPromptTemplates } from "../services/promptTemplates.js";
@@ -32,6 +45,9 @@ import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
 import type { AppSettings } from "../services/appSettings.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
+import { AgentValidationError, type AgentService } from "../services/agents.js";
+import { listAgentModels } from "../pi/runtime.js";
+import type { FastcarModels } from "../pi/runtime.js";
 
 export interface RouteDeps {
   artifacts: ArtifactService;
@@ -45,6 +61,12 @@ export interface RouteDeps {
    * it; the create endpoint returns 503 when it is absent.
    */
   manager?: ThreadManager;
+  /** Agent registry. Optional so narrow unit tests can omit it. */
+  agents?: AgentService;
+  /** Shared model runtime, for the agent builder's model picker. */
+  models?: FastcarModels;
+  /** Cron scheduler. Optional so narrow unit tests can omit it. */
+  scheduler?: Scheduler;
 }
 
 export function registerRoutes(
@@ -54,9 +76,12 @@ export function registerRoutes(
 ): void {
   app.get("/api/health", async () => ({ ok: true, mock: cfg.mock }));
 
-  app.get("/api/threads", async () => {
-    const threads = await listThreads();
-    return { threads: threads.map(toMeta) };
+  app.get<{ Querystring: { agentId?: string; limit?: string } }>("/api/threads", async (req) => {
+    const threads = await listThreads({
+      agentId: req.query.agentId,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    });
+    return { threads: threads.map((t) => threadMeta(cfg, t)) };
   });
 
   app.get<{ Params: { id: string } }>("/api/threads/:id/events", async (req, reply) => {
@@ -64,7 +89,7 @@ export function registerRoutes(
     if (!thread) return reply.code(404).send({ error: "no such thread" });
     const events = await listEvents(req.params.id);
     const res: ThreadHistoryResponse = {
-      thread: toMeta(thread),
+      thread: threadMeta(cfg, thread),
       events,
       pending: thread.pending,
     };
@@ -126,6 +151,181 @@ export function registerRoutes(
 
   /** Backs the composer's `/` menu. */
   app.get("/api/commands", async (): Promise<CommandsResponse> => ({ commands: COMMAND_SPECS }));
+
+  // The agent builder's tool checklist. Ungated like /api/commands: knowing
+  // which tools exist is not privileged, and the builder needs it before the
+  // user has an agent to save.
+  // --- schedules -----------------------------------------------------------
+
+  app.get<{ Querystring: { agentId?: string } }>("/api/schedules", async (req, reply) => {
+    if (!deps.scheduler) return reply.code(503).send({ error: "scheduler is not enabled" });
+    return { schedules: await deps.scheduler.list(req.query.agentId) };
+  });
+
+  /** Validate a cron expression and show what it actually means. */
+  app.get<{ Querystring: { cron?: string; timezone?: string } }>(
+    "/api/schedules/preview",
+    async (req): Promise<CronPreviewResponse> => {
+      const cron = req.query.cron ?? "";
+      const timezone = req.query.timezone ?? "UTC";
+      const v = validateCron(cron, timezone);
+      if (!v.ok) return { valid: false, error: v.error, nextRuns: [] };
+      return { valid: true, nextRuns: previewRuns(cron, timezone, 5) };
+    },
+  );
+
+  app.post("/api/schedules", async (req, reply) => {
+    if (!deps.scheduler) return reply.code(503).send({ error: "scheduler is not enabled" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      const rec = await deps.scheduler.create(req.body as never, caller.ownerId ?? null);
+      return reply.code(201).send({ schedule: deps.scheduler.toWire(rec) });
+    } catch (err) {
+      if (err instanceof ScheduleValidationError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>("/api/schedules/:id", async (req, reply) => {
+    if (!deps.scheduler) return reply.code(503).send({ error: "scheduler is not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      const rec = await deps.scheduler.update(req.params.id, req.body as never);
+      return { schedule: deps.scheduler.toWire(rec) };
+    } catch (err) {
+      if (err instanceof ScheduleValidationError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/schedules/:id", async (req, reply) => {
+    if (!deps.scheduler) return reply.code(503).send({ error: "scheduler is not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    await deps.scheduler.remove(req.params.id);
+    return { ok: true };
+  });
+
+  /** Manual "run now" — the same path a tick takes, minus the due check. */
+  app.post<{ Params: { id: string } }>("/api/schedules/:id/run", async (req, reply) => {
+    if (!deps.scheduler) return reply.code(503).send({ error: "scheduler is not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    const result = await deps.scheduler.runNow(req.params.id);
+    if ("skipped" in result) return reply.code(409).send({ error: result.skipped });
+    return reply.code(202).send(result);
+  });
+
+  // --- inbox ---------------------------------------------------------------
+
+  app.get<{ Querystring: { agentId?: string; filter?: InboxFilter; limit?: string } }>(
+    "/api/inbox",
+    async (req): Promise<InboxResponse> => {
+      const [items, counts] = await Promise.all([
+        listInbox({
+          agentId: req.query.agentId,
+          filter: req.query.filter,
+          limit: req.query.limit ? Number(req.query.limit) : undefined,
+          publicUrlBase: cfg.publicUrl,
+        }),
+        inboxCounts(),
+      ]);
+      return { items, ...counts };
+    },
+  );
+
+  app.post<{ Params: { threadId: string } }>("/api/inbox/:threadId/read", async (req, reply) => {
+    if (!deps.manager) return reply.code(503).send({ error: "thread manager is not available" });
+    await deps.manager.markRead(req.params.threadId);
+    return { ok: true };
+  });
+
+  app.post<{ Querystring: { agentId?: string } }>("/api/inbox/read-all", async (req, reply) => {
+    if (!deps.manager) return reply.code(503).send({ error: "thread manager is not available" });
+    await deps.manager.markAllRead(req.query.agentId);
+    return { ok: true };
+  });
+
+  // --- agents --------------------------------------------------------------
+  // Reads are ungated (the builder needs them before anything is saved);
+  // writes are admin-only, matching /api/mcp and /api/settings.
+
+  app.get("/api/agents", async (_req, reply) => {
+    if (!deps.agents) return reply.code(503).send({ error: "agents are not enabled" });
+    const rows = await deps.agents.list(true);
+    return { agents: rows.map((r) => deps.agents!.toDef(r)) };
+  });
+
+  app.post("/api/agents", async (req, reply) => {
+    if (!deps.agents) return reply.code(503).send({ error: "agents are not enabled" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      const rec = await deps.agents.create(req.body as never, caller.ownerId ?? null);
+      return reply.code(201).send({ agent: deps.agents.toDef(rec) });
+    } catch (err) {
+      if (err instanceof AgentValidationError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>("/api/agents/:id", async (req, reply) => {
+    if (!deps.agents) return reply.code(503).send({ error: "agents are not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      const rec = await deps.agents.update(req.params.id, req.body as never);
+      return { agent: deps.agents.toDef(rec) };
+    } catch (err) {
+      if (err instanceof AgentValidationError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+  });
+
+  app.delete<{ Params: { id: string }; Querystring: { archive?: string } }>(
+    "/api/agents/:id",
+    async (req, reply) => {
+      if (!deps.agents) return reply.code(503).send({ error: "agents are not enabled" });
+      if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+      try {
+        if (req.query.archive === "1") {
+          return { agent: deps.agents.toDef(await deps.agents.archive(req.params.id)) };
+        }
+        await deps.agents.delete(req.params.id);
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof AgentValidationError) {
+          // 409, not 400: the request is well formed, the agent is just still
+          // in use. The UI turns this into an "Archive instead?" prompt.
+          return reply.code(409).send({ error: err.message, canArchive: true });
+        }
+        throw err;
+      }
+    },
+  );
+
+  /** Everything this agent has published, newest first — its "Output" tab. */
+  app.get<{ Params: { id: string } }>("/api/agents/:id/artifacts", async (req) => {
+    const rows = await listArtifactsForAgent(req.params.id);
+    return {
+      artifacts: rows.map((r) => ({
+        ...r,
+        publicUrl: deps.artifacts.publicUrl(r),
+        children: [],
+      })),
+    };
+  });
+
+  app.get("/api/models", async (_req, reply) => {
+    if (!deps.models) return reply.code(503).send({ error: "model runtime is not available" });
+    return listAgentModels(deps.models.runtime, cfg);
+  });
+
+  app.get("/api/tools", async () => ({
+    tools: listTools({
+      email: Boolean(deps.email),
+      artifacts: Boolean(deps.artifacts),
+      mcp: Boolean(deps.mcp),
+    }),
+  }));
 
   /** Backs the composer's `@` menu; queried on every keystroke. */
   app.get<{ Querystring: { q?: string; limit?: string } }>(

@@ -345,9 +345,17 @@ export class McpManager {
     }
   }
 
-  /** One line per server for the conductor's system prompt; "" when none. */
-  async promptSummary(): Promise<string> {
-    const statuses = await this.statuses();
+  /**
+   * One line per server for an agent's system prompt; "" when none.
+   *
+   * `only` restricts the summary to the servers an agent may reach. Naming a
+   * server it cannot call would just invite a refused mcp_call — the subset is
+   * enforced for real in tools/mcp.ts, this keeps the prompt honest about it.
+   */
+  async promptSummary(only?: readonly string[]): Promise<string> {
+    const all = await this.statuses();
+    const allow = only ? new Set(only) : null;
+    const statuses = allow ? all.filter((s) => allow.has(s.name)) : all;
     if (!statuses.length) return "";
     return statuses
       .map((s) => {

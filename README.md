@@ -1,11 +1,18 @@
 # fastcar 🏎️
 
 A multi-vendor agent harness built on the [Pi coding agent SDK](https://pi.dev)
-(`@earendil-works/pi-coding-agent`): a **conductor** agent running on
-InceptionLabs **Mercury** that routes work to subagents on **OpenRouter**, with
-a Hermes-style dark web UI, Postgres-backed threads and memories, a
-plan → approve → act workflow, blocking clarifying questions, Tavily web search,
-and voice prompts via speech-to-text.
+(`@earendil-works/pi-coding-agent`).
+
+You build **agents** — a role, a model, a tool allowlist, a set of MCP servers —
+and each owns its own threads. Give one a **schedule** and it runs on a cron,
+publishing each morning's work as its own thread. Everything they produce lands
+in an **inbox**, which is where the app opens.
+
+Under the hood: InceptionLabs **Mercury** or any OpenRouter/OMLX model per
+agent, delegation to heavier subagents on **OpenRouter**, a Hermes-style dark
+web UI, Postgres-backed threads and memories, a plan → approve → act workflow,
+blocking clarifying questions, Tavily web search, and voice prompts via
+speech-to-text.
 
 ## Documentation site
 
@@ -32,17 +39,22 @@ the result to the `gh-pages` branch on every push to `main`.
                      │       │            idle / running /       │
                      │       │            awaiting_input /       │
                      │       │            awaiting_approval      │
-                     │  Conductor session (Pi AgentSession)      │
-                     │   model: inceptionlabs/mercury-2.5        │
-                     │   tools: read bash edit write grep find ls│
-                     │          run_subagent ask_user submit_plan│
-                     │          memory_* web_search              │
+                     │  Agent session (Pi AgentSession) per thread│
+                     │   the thread's agent supplies: system      │
+                     │   prompt, model + reasoning effort, tool   │
+                     │   allowlist (tools/registry.ts), MCP subset│
+                     │   the seeded "conductor" agent = today's   │
+                     │   prompt and full allowlist, from code     │
                      │       │                                   │
                      │  SubagentManager (in-process Pi sessions) │
                      │   ├─ maxcoding  → openrouter/$MAXCODING_MODEL
                      │   └─ minimodel  → openrouter/$MINIMODEL_MODEL
+                     │                                           │
+                     │  Scheduler (croner, 30s DB-driven tick)   │
+                     │   due → claim (CAS) → fresh thread → run  │
                      └──────────────────────────────────────────┘
-   Postgres: threads, events (UI history), memories (FTS)
+   Postgres: agents, threads (+ inbox projection), schedules,
+             events (UI history), memories (FTS)
    Pi JSONL sessions (.fastcar/sessions): agent-context source of truth
    OpenRouter /audio/transcriptions: voice → text (never via Pi)
 ```
@@ -135,7 +147,7 @@ recurses forever.
 | `INCEPTION_API_KEY` | Conductor model auth (Mercury) | required unless mock |
 | `INCEPTION_MODEL` | InceptionLabs chat model id for the conductor | `mercury-2.5` |
 | `INCEPTION_MAX_TOKENS` | `max_tokens` per conductor request — budget shared by Mercury's reasoning and its answer; raise it if high-effort turns end with `finish_reason: "length"` | `16384` |
-| `CONDUCTOR_REASONING_EFFORT` | Mercury `reasoning_effort` at boot: `instant`, `medium`, `high`. The ⚙ settings modal overrides it at runtime (stored in `<data dir>/settings.json`) | `medium` |
+| `CONDUCTOR_REASONING_EFFORT` | Default `reasoning_effort`: `instant`, `medium`, `high`. Settings → General overrides it at runtime (stored in `<data dir>/settings.json`); an agent that sets its own effort ignores both | `medium` |
 | `OPENROUTER_API_KEY` | Subagents + transcription | required unless mock |
 | `MAXCODING_MODEL` | OpenRouter slug for the heavy coding subagent | `anthropic/claude-sonnet-4.5` |
 | `MINIMODEL_MODEL` | OpenRouter slug for the fast/cheap subagent | `google/gemini-2.5-flash-lite` |
@@ -154,13 +166,48 @@ recurses forever.
 
 ## Using it
 
-- **Threads** live in the left sidebar (date-grouped); pick one on boot or
-  start a new thread (or a new *plan* thread). Hover a thread for ✎ (rename —
-  double-clicking the title works too, and `/rename <title>` renames the open
-  thread) and × (delete, after a confirm). Deleting is a hard delete: the row,
-  its history (events cascade), and its Pi session file all go, a run in flight
-  is aborted, and the sidebar falls through to the next thread. A renamed thread
-  keeps its name — auto-titling only ever fills in an untitled one.
+- **Agents** are what you build. An agent is a role (its system prompt), a
+  model and reasoning effort, a tool allowlist, and a subset of the installed
+  MCP servers — and it owns its own threads. Create one from the sidebar
+  ("+ New agent") or `#/agent/new`; the builder lists every tool the server
+  offers, grouped by category, with the ones that change things marked. The
+  built-in **Conductor** is seeded on first migration and keeps working exactly
+  as before; its prompt, model and tools come from code (so `INCEPTION_MODEL`,
+  `CONDUCTOR_REASONING_EFFORT` and edits to `CONDUCTOR_BASE` still take effect),
+  which is why it is read-only in the builder — duplicate it to customise.
+  `ask_user` is always granted, and `submit_plan` whenever plan mode is on.
+  Changing an agent's tools or model applies to its threads' next turn: Pi fixes
+  a session's tool registry at creation, so a run already in flight keeps the
+  toolset it started with and the thread says so.
+
+  Don't confuse an agent with a **subagent**: `maxcoding` and `minimodel`
+  (`agents.yaml`) are delegation pools that run *inside* a turn via
+  `run_subagent`. They own no threads and have no inbox. `/agents` lists both.
+
+- **The inbox** is the landing page: one row per thread, newest reply first,
+  with the agent that produced it, a preview, an unread dot, and chips linking
+  straight to any artifacts that run published. Rows that need you —
+  a question to answer or a plan to approve — are flagged, and you can filter
+  to those. Opening a thread marks it read; a later reply marks it unread
+  again.
+
+- **Schedules** run an agent on a cron. Each firing creates a fresh thread
+  owned by that agent, titled `<schedule> — <date>`, so every morning's run is
+  independently readable and linkable. Build one with the preset picker
+  ("every day at 07:00") or a raw cron expression, in any IANA timezone; the
+  form previews the next few firings, computed server-side so it agrees with
+  the scheduler about DST. **Run now** fires the same path a tick would.
+  Runs happen while the server is up: a firing missed during a restart fires
+  once when it comes back rather than replaying every slot it missed, and a
+  schedule whose previous run is still going is skipped rather than overlapped.
+  A schedule can also POST its result to a webhook.
+
+- **Threads** are grouped by date under each agent (Agents → an agent →
+  Threads). Hover a thread for ✎ (rename — double-clicking the title works too,
+  and `/rename <title>` renames the open thread) and × (delete, after a
+  confirm). Deleting is a hard delete: the row, its history (events cascade),
+  and its Pi session file all go, and a run in flight is aborted. A renamed
+  thread keeps its name — auto-titling only ever fills in an untitled one.
 - **Tasks** are a chat message or an attached/dropped `.md` file (sent as the
   task specification). The 🎙️ button records a voice prompt and drops the
   transcript into the composer.

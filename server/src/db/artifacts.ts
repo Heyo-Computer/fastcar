@@ -87,3 +87,24 @@ export async function getThreadOwner(threadId: string): Promise<string | null> {
   );
   return rows[0]?.owner_id ?? null;
 }
+
+/**
+ * Every artifact an agent has produced, across all of its threads, newest
+ * first — the agent's "Output" tab. Distinct from listArtifactsForThread,
+ * which is scoped to one run.
+ */
+export async function listArtifactsForAgent(
+  agentId: string,
+  limit = 100,
+): Promise<Array<ArtifactRecord & { threadTitle: string }>> {
+  const { rows } = await getPool().query<ArtifactRow & { thread_title: string }>(
+    `SELECT a.*, t.title AS thread_title
+     FROM artifacts a
+     JOIN threads t ON t.id = a.thread_id
+     WHERE t.agent_id = $1
+     ORDER BY a.created_at DESC
+     LIMIT $2`,
+    [agentId, limit],
+  );
+  return rows.map((r) => ({ ...toRecord(r), threadTitle: r.thread_title }));
+}

@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type {
   AgentName,
+  Schedule,
   PendingInteraction,
   PromptThreadConfig,
   ServerMessage,
@@ -15,9 +16,12 @@ import type {
 import type { Config } from "../config.js";
 import { insertEvents, maxSeq, type EventInsert } from "../db/events.js";
 import * as threadsDb from "../db/threads.js";
+import * as inboxDb from "../db/inbox.js";
+import * as schedulesDb from "../db/schedules.js";
+import { scheduleEvents } from "../services/scheduler.js";
 import type { ThreadRecord } from "../db/threads.js";
-import { toMeta } from "../db/threads.js";
-import { createConductorSession, type ConductorHandle } from "../pi/conductor.js";
+
+import { createManagedSession, type AgentSessionHandle } from "../pi/agentSession.js";
 import { appSettingsEvents, type AppSettings } from "../services/appSettings.js";
 import { collectRepoStatuses, gitEvents } from "../services/git.js";
 import { mcpEvents, type McpManager } from "../services/mcp.js";
@@ -31,12 +35,18 @@ import { RateLimiter, postToWebhook, validateWebhookUrl } from "../services/webh
 import { WebhookTokenStore, generateTriggerToken } from "../services/webhookTokens.js";
 import type { EmailService } from "../services/emailService.js";
 import { artifactEvents, type ArtifactService } from "../services/artifacts.js";
+import { AgentService, agentEvents, type ResolvedAgent } from "../services/agents.js";
 import { findCommand, parseCommandLine, runCommand } from "./commands.js";
+import {
+  PUBLIC_PROMPT_TRIGGER_PREFIX,
+  threadMeta,
+  threadPublicUrl,
+} from "../services/threadMeta.js";
+
+// Re-exported for the public trigger route, which registers the path prefix.
+export { PUBLIC_PROMPT_TRIGGER_PREFIX };
 
 type Broadcast = (msg: ServerMessage) => void;
-
-/** Canonical public path prefix for triggering a prompt thread (no auth). Keep in sync with deploy/fastcar.json `auth.public_paths`. */
-export const PUBLIC_PROMPT_TRIGGER_PREFIX = "/pt/";
 
 interface PendingQuestion {
   questionId: string;
@@ -49,7 +59,14 @@ interface ThreadRuntime {
   mode: ThreadMode;
   status: ThreadStatus;
   title: string;
-  conductor: ConductorHandle | null;
+  conductor: AgentSessionHandle | null;
+  /** Owning agent, resolved. Null until the runtime is first loaded. */
+  agent: ResolvedAgent | null;
+  /**
+   * The agent definition changed in a way Pi cannot absorb into a live session
+   * (tools, model), so the session must be rebuilt before the next turn.
+   */
+  staleSession: boolean;
   seq: number;
   /** Complete items staged for the PG flush at agent_end. */
   staged: EventInsert[];
@@ -61,7 +78,7 @@ interface ThreadRuntime {
   submittedPlan: string | null;
   /** Rolling text of the current assistant message, for title + plan fallback. */
   lastAssistantText: string;
-  creating: Promise<ConductorHandle> | null;
+  creating: Promise<AgentSessionHandle> | null;
   /** The thread is gone: a run still unwinding must not write or broadcast. */
   deleted: boolean;
 }
@@ -87,12 +104,33 @@ export class ThreadManager {
     private readonly artifacts?: ArtifactService,
     private readonly mcp?: McpManager,
     private readonly settings?: AppSettings,
+    /**
+     * Services added after the original seven positional params. Kept as a
+     * trailing options object so the three tests that construct a
+     * ThreadManager with four positional args keep compiling.
+     */
+    private readonly extra: { agents?: AgentService } = {},
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
     appSettingsEvents.on("changed", () => this.onSettingsChanged());
     gitEvents.on("changed", () => void this.broadcastRepos());
     mcpEvents.on("changed", () => void this.onMcpChanged());
     artifactEvents.on("changed", (threadId) => this.broadcast({ type: "artifacts_updated", threadId }));
+    agentEvents.on("changed", (agentId: string) => void this.onAgentChanged(agentId));
+    scheduleEvents.on("changed", () => this.broadcastSchedules());
+  }
+
+  private ownAgents?: AgentService;
+
+  /**
+   * The agent registry. Callers that do not pass one (the narrow prompt-thread
+   * tests construct a ThreadManager with four positional args) get a default
+   * instance rather than an error — every thread still resolves to the seeded
+   * builtin conductor, which is what those tests expect.
+   */
+  private get agents(): AgentService {
+    this.ownAgents ??= this.extra.agents ?? new AgentService(this.cfg, this.settings, this.mcp);
+    return this.ownAgents;
   }
 
   async broadcastRepos(): Promise<void> {
@@ -108,8 +146,76 @@ export class ThreadManager {
   private onSettingsChanged(): void {
     const effort = this.conductorReasoningEffort();
     for (const rt of this.runtimes.values()) {
+      // An agent that pins its own effort is not following the ⚙ setting, so
+      // pushing the global value into its session would silently override it.
+      if (rt.agent?.effortPinned) continue;
       rt.conductor?.setReasoningEffort(effort);
     }
+  }
+
+  /**
+   * An agent definition changed. Prompt, MCP subset and effort can be pushed
+   * into a live Pi session; tools and model cannot (Pi fixes the tool registry
+   * and model at creation), so those mark the session stale and it is rebuilt
+   * at the next idle moment rather than mid-run.
+   */
+  private async onAgentChanged(agentId: string): Promise<void> {
+    for (const rt of this.runtimes.values()) {
+      if (rt.agent?.id !== agentId) continue;
+      let next: ResolvedAgent;
+      try {
+        next = await this.agents.forThread(agentId);
+      } catch (err) {
+        console.error(`failed to reload agent ${agentId}:`, err);
+        continue;
+      }
+      const prev = rt.agent;
+      rt.agent = next;
+
+      const needsRebuild =
+        JSON.stringify(prev.tools) !== JSON.stringify(next.tools) ||
+        prev.modelProvider !== next.modelProvider ||
+        prev.modelSlug !== next.modelSlug ||
+        prev.maxTokens !== next.maxTokens;
+
+      if (needsRebuild) {
+        rt.staleSession = true;
+        if (rt.conductor) {
+          this.stageAndSend(rt, rt.agent.slug, undefined, {
+            kind: "system",
+            text: `Agent **${next.name}** changed its tools or model — this takes effect on the next turn.`,
+          });
+          await this.flushStaged(rt);
+        }
+      } else if (rt.conductor) {
+        await rt.conductor.refreshSystemPrompt().catch((err) => {
+          console.error(`failed to refresh prompt for thread ${rt.id}:`, err);
+        });
+        rt.conductor.setReasoningEffort(next.reasoningEffort);
+      }
+    }
+    this.broadcastAgents();
+  }
+
+  /** Set by index.ts once the scheduler exists; absent in dev/smoke. */
+  private scheduler?: { list(agentId?: string): Promise<Schedule[]> };
+
+  attachScheduler(scheduler: { list(agentId?: string): Promise<Schedule[]> }): void {
+    this.scheduler = scheduler;
+  }
+
+  private broadcastSchedules(): void {
+    void this.scheduler
+      ?.list()
+      .then((schedules) => this.broadcast({ type: "schedules_updated", schedules }))
+      .catch((err) => console.error("failed to broadcast schedules:", err));
+  }
+
+  private broadcastAgents(): void {
+    void this.agents
+      .list(true)
+      .then((rows) => this.broadcast({ type: "agents_updated", agents: rows.map((r) => this.agents.toDef(r)) }))
+      .catch((err) => console.error("failed to broadcast agents:", err));
   }
 
   private conductorReasoningEffort(): ReasoningEffort {
@@ -175,27 +281,20 @@ export class ThreadManager {
 
   // ---------------------------------------------------------------- threads
 
-  /**
-   * Public, unauthenticated trigger URL for a prompt thread:
-   * `<publicUrl>/pt/<threadId>`. Returns null for chat threads (no trigger).
-   */
-  threadPublicUrl(threadId: string): string | null {
-    return `${this.cfg.publicUrl}${PUBLIC_PROMPT_TRIGGER_PREFIX}${threadId}`;
+  /** Public, unauthenticated trigger URL for a prompt thread (`<publicUrl>/pt/<id>`). */
+  threadPublicUrl(threadId: string): string {
+    return threadPublicUrl(this.cfg, threadId);
   }
 
-  /**
-   * Wrap `toMeta()` and add the public trigger URL for prompt threads. The URL
-   * is the capability that lets an unauthenticated caller re-run the thread via
-   * `/pt/<id>`; chat threads get `null` so the UI can hide the trigger affordance.
-   */
+  /** See services/threadMeta.ts — the one path a record takes to the wire. */
   private enrichMeta(rec: ThreadRecord): ThreadMeta {
-    const meta = toMeta(rec);
-    meta.publicUrl = rec.threadType === "prompt" ? this.threadPublicUrl(rec.id) : null;
-    return meta;
+    return threadMeta(this.cfg, rec);
   }
 
-  async createThread(mode: ThreadMode = "act"): Promise<ThreadMeta> {
-    const rec = await threadsDb.createThread(mode);
+  async createThread(mode: ThreadMode = "act", agentId?: string): Promise<ThreadMeta> {
+    // No agent named: leave the column null. It resolves to the builtin
+    // conductor at runtime, which is what addRepo() and the older tests want.
+    const rec = await threadsDb.createThread(mode, "chat", null, agentId ?? null);
     const meta = this.enrichMeta(rec);
     this.broadcast({ type: "thread_created", thread: meta });
     return meta;
@@ -250,7 +349,7 @@ export class ThreadManager {
 
     // Record the resolved prompt as the user message that started this thread.
     const rt = await this.getRuntime(threadId);
-    this.stageAndSend(rt, "conductor", undefined, {
+    this.stageAndSend(rt, this.slugOf(rt), undefined, {
       kind: "user_message",
       text: `Prompt thread (template: ${template.id}):\n\n${promptText}`,
     });
@@ -270,11 +369,11 @@ export class ThreadManager {
     let delivery: { ok: boolean; status: "success" | "error" | "skipped"; response: string };
     try {
       response = await completePrompt(this.models, promptText);
-      this.stageAndSend(rt, "conductor", undefined, { kind: "message_end", text: response });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "message_end", text: response });
       await this.flushStaged(rt);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.stageAndSend(rt, "conductor", undefined, {
+      this.stageAndSend(rt, this.slugOf(rt), undefined, {
         kind: "error",
         message: `LLM generation failed: ${message}`,
       });
@@ -314,8 +413,15 @@ export class ThreadManager {
           : delivery.status === "skipped"
             ? `⏭️ Webhook skipped: ${delivery.response}`
             : `❌ Webhook failed: ${delivery.response}`;
-      this.stageAndSend(rt, "conductor", undefined, { kind: "system", text: label });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "system", text: label });
       await this.flushStaged(rt);
+      // The delivery outcome is what the user wants to see on the inbox row for
+      // a prompt thread — the generated text is already the message above it.
+      await threadsDb.updateThread(threadId, {
+        ...this.inboxPatch(rt, label),
+        lastError: delivery.ok ? null : delivery.response,
+      });
+      this.broadcastInboxCounts();
     }
     const rec = await threadsDb.getThread(threadId);
     if (rec?.promptConfig) {
@@ -372,6 +478,116 @@ export class ThreadManager {
       console.error(`prompt thread ${threadId} trigger delivery failed:`, err);
     });
     return { status: "accepted" };
+  }
+
+  /**
+   * Run a schedule: a fresh thread per firing, owned by the agent.
+   *
+   * The run goes through the ordinary prompt path — ensureConductor, the
+   * agent's own session, runPrompt, finishRun — so a scheduled turn is not a
+   * second engine. Prompt threads keep their lighter completePrompt() path;
+   * only the outer plumbing (thread creation, inbox, webhook delivery) is
+   * shared.
+   */
+  async runSchedule(schedule: {
+    id: string;
+    agentId: string;
+    name: string;
+    prompt: string;
+    mode: ThreadMode;
+    timezone: string;
+    webhookUrl: string | null;
+    ownerId: string | null;
+  }): Promise<string> {
+    const stamp = new Intl.DateTimeFormat("en-CA", {
+      timeZone: schedule.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+
+    const rec = await threadsDb.createThread(schedule.mode, "chat", schedule.ownerId, schedule.agentId, {
+      source: "schedule",
+      title: `${schedule.name} — ${stamp}`,
+    });
+    await threadsDb.updateThread(rec.id, { scheduleId: schedule.id });
+    const created = await threadsDb.getThread(rec.id);
+    if (created) this.broadcast({ type: "thread_created", thread: this.enrichMeta(created) });
+
+    // Fire and forget, like the prompt-thread path: a scheduler tick must not
+    // block on a run that may take minutes.
+    void this.runScheduledPrompt(rec.id, schedule).catch((err) => {
+      console.error(`scheduled run ${rec.id} failed:`, err);
+    });
+    return rec.id;
+  }
+
+  /** Drive the run to completion, then record the outcome on the schedule. */
+  private async runScheduledPrompt(
+    threadId: string,
+    schedule: { id: string; prompt: string; webhookUrl: string | null },
+  ): Promise<void> {
+    let status: "ok" | "error" = "ok";
+    let error: string | null = null;
+    try {
+      // `prompt()` returns once the run is queued, so wait for the thread to
+      // settle before reporting — a schedule that says "ok" the instant it
+      // starts is worse than useless.
+      await this.prompt(threadId, schedule.prompt);
+      await this.waitUntilSettled(threadId);
+      const rec = await threadsDb.getThread(threadId);
+      if (rec?.lastError) {
+        status = "error";
+        error = rec.lastError;
+      }
+    } catch (err) {
+      status = "error";
+      error = err instanceof Error ? err.message : String(err);
+    }
+
+    if (schedule.webhookUrl && status === "ok") {
+      const token = this.webhookTokens.getScheduleToken(schedule.id);
+      const rec = await threadsDb.getThread(threadId);
+      const delivery = await postToWebhook(
+        schedule.webhookUrl,
+        token,
+        { threadId, prompt: schedule.prompt, response: rec?.lastMessagePreview ?? "" },
+        undefined,
+      );
+      if (!delivery.ok) {
+        status = "error";
+        error = `webhook delivery failed: ${delivery.response}`;
+      }
+    }
+
+    await schedulesDb.updateSchedule(schedule.id, {
+      lastStatus: status,
+      lastError: error,
+      lastRunThreadId: threadId,
+    });
+    scheduleEvents.emit("changed");
+  }
+
+  /**
+   * Resolve once a thread stops running. A scheduled run has no user to steer
+   * it, so "settled" means idle, or blocked on input/approval nobody is going
+   * to give it — either way the run is over as far as the schedule cares.
+   */
+  private waitUntilSettled(threadId: string, timeoutMs = 20 * 60_000): Promise<void> {
+    const done = (s: ThreadStatus) => s !== "running";
+    const rt = this.runtimes.get(threadId);
+    if (rt && done(rt.status)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(finish, timeoutMs);
+      const off = this.addClient((msg) => {
+        if (msg.type === "status" && msg.threadId === threadId && done(msg.status)) finish();
+      });
+      function finish(): void {
+        clearTimeout(timer);
+        off();
+        resolve();
+      }
+    });
   }
 
   async renameThread(threadId: string, title: string): Promise<void> {
@@ -479,7 +695,7 @@ export class ThreadManager {
     await threadsDb.updateThread(rt.id, { status: "running" });
     await this.emitStatus(rt);
 
-    this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text });
+    this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "user_message", text });
     // user_message rows are not tied to agent_end; flush immediately so a
     // crash mid-run still keeps the user's prompt in history.
     await this.flushStaged(rt);
@@ -533,7 +749,7 @@ export class ThreadManager {
     const rt = await this.getRuntime(threadId);
     return this.enqueue(rt, async () => {
       this.assertAcceptsWork(rt);
-      this.stageAndSend(rt, "conductor", undefined, {
+      this.stageAndSend(rt, this.slugOf(rt), undefined, {
         kind: "user_message",
         text: `/email to=${args.to} subject=${args.subject}`,
       });
@@ -541,7 +757,7 @@ export class ThreadManager {
       const text = result.ok
         ? `✅ Email sent to ${args.to}${result.messageId ? ` (messageId: ${result.messageId})` : ""}.`
         : `❌ Email failed: ${result.message}`;
-      this.stageAndSend(rt, "conductor", undefined, { kind: "system", text });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "system", text });
       await this.flushStaged(rt);
     });
   }
@@ -551,7 +767,7 @@ export class ThreadManager {
     this.assertAcceptsWork(rt);
 
     const line = `/${name}${args ? ` ${args}` : ""}`;
-    this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text: line });
+    this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "user_message", text: line });
 
     let modeChanged = false;
     try {
@@ -568,22 +784,26 @@ export class ThreadManager {
         rename: (title) => this.applyTitle(rt, rt.id, title),
         mcp: this.mcp,
       });
-      this.stageAndSend(rt, "conductor", undefined, { kind: "system", text: output });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "system", text: output });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.stageAndSend(rt, "conductor", undefined, { kind: "error", message: `${line}: ${message}` });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "error", message: `${line}: ${message}` });
     } finally {
       await this.flushStaged(rt);
       if (modeChanged) await this.emitStatus(rt);
     }
   }
 
-  private async runPrompt(rt: ThreadRuntime, conductor: ConductorHandle, text: string): Promise<void> {
+  private async runPrompt(rt: ThreadRuntime, conductor: AgentSessionHandle, text: string): Promise<void> {
     try {
       await conductor.session.prompt(text);
+      await threadsDb.updateThread(rt.id, { lastError: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.stageAndSend(rt, "conductor", undefined, { kind: "error", message });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "error", message });
+      // Surfaced on the inbox row so a failed overnight run is visible without
+      // opening the thread.
+      await threadsDb.updateThread(rt.id, { lastError: message });
     } finally {
       await this.finishRun(rt);
     }
@@ -599,16 +819,64 @@ export class ThreadManager {
       rt.submittedPlan = null;
       rt.status = "awaiting_approval";
       const pending: PendingInteraction = { kind: "plan", planMarkdown: plan };
-      await threadsDb.updateThread(rt.id, { status: rt.status, pending });
-      this.stageAndSend(rt, "conductor", undefined, { kind: "plan", planMarkdown: plan });
+      // The inbox fields ride the UPDATE this branch was doing anyway.
+      await threadsDb.updateThread(rt.id, {
+        status: rt.status,
+        pending,
+        ...this.inboxPatch(rt, "Plan ready for review"),
+      });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "plan", planMarkdown: plan });
       await this.flushStaged(rt);
       this.broadcast({ type: "plan_ready", threadId: rt.id, planMarkdown: plan });
     } else {
       rt.status = "idle";
-      await threadsDb.updateThread(rt.id, { status: "idle", pending: null });
+      await threadsDb.updateThread(rt.id, {
+        status: "idle",
+        pending: null,
+        ...this.inboxPatch(rt, rt.lastAssistantText),
+      });
     }
     await this.emitStatus(rt);
     await this.maybeAutoTitle(rt);
+    this.broadcastInboxCounts();
+  }
+
+  /**
+   * The inbox columns for a thread that just produced something. Returns an
+   * empty patch for empty text so a no-op turn does not mark the thread unread
+   * with a blank preview.
+   */
+  private inboxPatch(
+    rt: ThreadRuntime,
+    text: string,
+  ): { lastMessageAt: Date; lastMessagePreview: string; lastMessageAgent: string } | Record<string, never> {
+    const preview = summarize(text);
+    if (!preview) return {};
+    return {
+      lastMessageAt: new Date(),
+      lastMessagePreview: preview,
+      lastMessageAgent: this.slugOf(rt),
+    };
+  }
+
+  private broadcastInboxCounts(): void {
+    void inboxDb
+      .inboxCounts()
+      .then((c) => this.broadcast({ type: "inbox_counts", ...c }))
+      .catch((err) => console.error("failed to compute inbox counts:", err));
+  }
+
+  /** Mark a thread read and tell every client the counts moved. */
+  async markRead(threadId: string): Promise<void> {
+    await inboxDb.markRead(threadId);
+    const rec = await threadsDb.getThread(threadId);
+    if (rec) this.broadcast({ type: "thread_updated", thread: this.enrichMeta(rec) });
+    this.broadcastInboxCounts();
+  }
+
+  async markAllRead(agentId?: string): Promise<void> {
+    await inboxDb.markAllRead(agentId);
+    this.broadcastInboxCounts();
   }
 
   private looksLikePlan(rt: ThreadRuntime): boolean {
@@ -630,7 +898,7 @@ export class ThreadManager {
       this.subagents.cancel(taskId);
       const rt = this.runtimes.get(threadId);
       if (rt) {
-        this.stageAndSend(rt, "conductor", undefined, {
+        this.stageAndSend(rt, this.slugOf(rt), undefined, {
           kind: "system",
           text: `Steering: cancelled subagent task ${taskId}.`,
         });
@@ -641,7 +909,7 @@ export class ThreadManager {
 
     const rt = this.runtimes.get(threadId);
     if (!rt?.conductor || rt.status !== "running") throw new Error("agent is not running");
-    this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text: `(steer) ${text}` });
+    this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "user_message", text: `(steer) ${text}` });
     await rt.conductor.session.steer(await expandMentions(this.cfg, text));
   }
 
@@ -664,7 +932,7 @@ export class ThreadManager {
     rt.pendingQuestion = null;
     rt.status = "running";
     await threadsDb.updateThread(threadId, { status: "running", pending: null });
-    this.stageAndSend(rt, "conductor", undefined, { kind: "answer", questionId, text: answer });
+    this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "answer", questionId, text: answer });
     await this.emitStatus(rt);
     pending.resolve(answer);
   }
@@ -685,7 +953,7 @@ export class ThreadManager {
     await this.emitStatus(rt);
 
     const text = `The user approved your plan. Execute it now.\n\nApproved plan:\n${plan}`;
-    this.stageAndSend(rt, "conductor", undefined, { kind: "user_message", text: "✅ Plan approved — executing." });
+    this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "user_message", text: "✅ Plan approved — executing." });
     void this.runPrompt(rt, conductor, text);
   }
 
@@ -698,7 +966,7 @@ export class ThreadManager {
     await this.emitStatus(rt);
 
     const text = `The user did not approve the plan. Revise it and submit again with submit_plan.\n\nFeedback:\n${feedback}`;
-    this.stageAndSend(rt, "conductor", undefined, {
+    this.stageAndSend(rt, this.slugOf(rt), undefined, {
       kind: "user_message",
       text: `❌ Plan rejected: ${feedback}`,
     });
@@ -751,21 +1019,42 @@ export class ThreadManager {
       lastAssistantText: "",
       creating: null,
       deleted: false,
+      agent: await this.agents.forThread(rec.agentId),
+      staleSession: false,
     };
     this.runtimes.set(threadId, rt);
     return rt;
   }
 
-  private async ensureConductor(rt: ThreadRuntime): Promise<ConductorHandle> {
+  /**
+   * The thread's agent session, created on first use.
+   *
+   * A stale session (the agent's tools or model changed under it) is disposed
+   * and rebuilt here rather than when the edit landed: Pi fixes the tool
+   * registry and model at creation, and tearing a session down mid-run would
+   * abort the turn. Callers reach this through the thread's queue, so "now" is
+   * always a safe moment.
+   */
+  private async ensureConductor(rt: ThreadRuntime): Promise<AgentSessionHandle> {
+    if (rt.conductor && rt.staleSession) {
+      rt.conductor.session.dispose();
+      rt.conductor = null;
+      rt.staleSession = false;
+    }
     if (rt.conductor) return rt.conductor;
     if (rt.creating) return rt.creating;
 
     rt.creating = (async () => {
       const rec = await threadsDb.getThread(rt.id);
-      const handle = await createConductorSession({
+      // Re-resolve rather than trusting the cached copy: the row may have been
+      // edited while this thread had no live session to notify.
+      const agent = await this.agents.forThread(rec?.agentId ?? null);
+      rt.agent = agent;
+      const handle = await createManagedSession({
         cfg: this.cfg,
         models: this.models,
         subagents: this.subagents,
+        agent,
         threadId: rt.id,
         getMode: () => rt.mode,
         askBridge: {
@@ -782,7 +1071,7 @@ export class ThreadManager {
         artifacts: this.artifacts,
         mcp: this.mcp,
         sessionFile: rec?.piSessionFile ?? null,
-        reasoningEffort: this.conductorReasoningEffort(),
+        reasoningEffort: agent.reasoningEffort,
       });
 
       handle.session.subscribe((event) => {
@@ -817,12 +1106,17 @@ export class ThreadManager {
       rt.pendingQuestion = { questionId, resolve, reject };
       rt.status = "awaiting_input";
       const pending: PendingInteraction = { kind: "question", questionId, prompt: question, options };
-      this.stageAndSend(rt, "conductor", undefined, { kind: "question", questionId, prompt: question, options });
+      this.stageAndSend(rt, this.slugOf(rt), undefined, { kind: "question", questionId, prompt: question, options });
 
       void threadsDb
-        .updateThread(rt.id, { status: "awaiting_input", pending })
+        .updateThread(rt.id, {
+          status: "awaiting_input",
+          pending,
+          ...this.inboxPatch(rt, question),
+        })
         .then(() => this.emitStatus(rt))
-        .then(() => this.flushStaged(rt));
+        .then(() => this.flushStaged(rt))
+        .then(() => this.broadcastInboxCounts());
 
       this.broadcast({ type: "question", threadId: rt.id, questionId, prompt: question, options });
 
@@ -839,7 +1133,16 @@ export class ThreadManager {
 
   private onConductorEvent(rt: ThreadRuntime, ev: StreamEvent): void {
     if (ev.kind === "message_end") rt.lastAssistantText = ev.text;
-    this.stageAndSend(rt, "conductor", undefined, ev);
+    this.stageAndSend(rt, this.slugOf(rt), undefined, ev);
+  }
+
+  /**
+   * The events.agent value for this thread's top-level turns. Falls back to
+   * "conductor" so a runtime whose agent has not resolved yet still produces
+   * the historical value rather than undefined.
+   */
+  private slugOf(rt: ThreadRuntime): AgentName {
+    return rt.agent?.slug ?? "conductor";
   }
 
   private onSubagentEvent(rt: ThreadRuntime, kind: SubagentKind, taskId: string, ev: StreamEvent): void {
@@ -999,6 +1302,14 @@ export class ThreadManager {
     }
     this.runtimes.clear();
   }
+}
+
+/**
+ * A one-line preview for the inbox: markdown stripped, whitespace collapsed.
+ * Same shape as maybeAutoTitle's title derivation, at a longer cut.
+ */
+function summarize(text: string): string {
+  return text.replace(/[#*`>\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 function truncate(text: string, max: number): string {

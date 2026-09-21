@@ -9,14 +9,12 @@ import {
 import type { Model } from "@earendil-works/pi-ai";
 import type { StreamEvent, UsageSummary } from "@fastcar/shared";
 import type { Config } from "../config.js";
-import { createWebSearchTool } from "../tools/webSearch.js";
-import { createBrowserCheckTool } from "../tools/browserCheck.js";
-import { createGitTools, GIT_MUTATING_TOOLS, GIT_TOOL_NAMES } from "../tools/git.js";
 import {
-  createHeyctlTools,
-  HEYCTL_TOOL_NAMES,
-} from "../tools/heyctl.js";
-import { createMcpTools, MCP_READONLY_TOOL_NAMES } from "../tools/mcp.js";
+  buildToolset,
+  CHANGE_EVIDENCE_TOOLS,
+  SUBAGENT_PRESETS,
+  type SubagentPool,
+} from "../tools/registry.js";
 import type { McpManager } from "../services/mcp.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
 import { translateSessionEvent, extractText, extractUsage } from "./events.js";
@@ -76,31 +74,7 @@ class Semaphore {
 }
 
 /** Concurrency pools. Planning runs are read-only and cheap, so they get their own, wider pool. */
-type PoolKey = "maxcoding" | "maxcoding:plan" | "minimodel";
-
-const READ_ONLY_GIT_TOOLS = GIT_TOOL_NAMES.filter((n) => !GIT_MUTATING_TOOLS.includes(n));
-
-const SUBAGENT_TOOLS: Record<PoolKey, string[]> = {
-  // maxcoding gets git except clone and purge — the repository registry's
-  // lifecycle stays with the conductor, which can ask the user about it. The
-  // same split applies to MCP: it can call installed servers, not install them.
-  maxcoding: [
-    "read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "browser_check",
-    ...GIT_TOOL_NAMES.filter((n) => n !== "git_clone" && n !== "git_purge"),
-    ...HEYCTL_TOOL_NAMES,
-    ...MCP_READONLY_TOOL_NAMES, "mcp_call",
-  ],
-  // Planning maxcoding must not be able to change anything — no bash either,
-  // since bash can mutate. This is what lets the conductor run it in plan mode.
-  // heyctl is included because its read verbs (get, describe, top, status) are
-  // how a planning run inspects app-lb state; the tool itself cannot tell read
-  // from write, so the plan prompt forbids mutating subcommands there.
-  "maxcoding:plan": [
-    "read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS,
-    ...HEYCTL_TOOL_NAMES, ...MCP_READONLY_TOOL_NAMES,
-  ],
-  minimodel: ["read", "grep", "find", "ls", "web_search", ...READ_ONLY_GIT_TOOLS, ...MCP_READONLY_TOOL_NAMES],
-};
+type PoolKey = SubagentPool;
 
 const SUBAGENT_PROMPTS: Record<PoolKey, string> = {
   maxcoding: MAXCODING_PROMPT,
@@ -111,9 +85,6 @@ const SUBAGENT_PROMPTS: Record<PoolKey, string> = {
 function poolKey(kind: SubagentKind, mode: SubagentMode | undefined): PoolKey {
   return kind === "maxcoding" && mode === "plan" ? "maxcoding:plan" : kind;
 }
-
-/** Using one of these means the subagent changed something, so it must verify it. */
-const MUTATING_TOOLS = ["edit", "write", "bash"];
 
 const VERIFICATION_REMINDER = `Your report is missing the required "## Verification" section, and you changed things.
 
@@ -235,20 +206,23 @@ export class SubagentManager {
     });
     await loader.reload();
 
+    const toolset = buildToolset(SUBAGENT_PRESETS[pool], {
+      cfg: this.cfg,
+      threadId: taskId,
+      mcp: this.mcp,
+    });
+
     const { session } = await createAgentSession({
       cwd: this.cfg.workdir,
       agentDir,
       modelRuntime: this.models.runtime,
       model: this.resolveModel(kind),
       thinkingLevel: "off",
-      tools: SUBAGENT_TOOLS[pool],
-      customTools: [
-        createWebSearchTool(this.cfg),
-        createBrowserCheckTool(this.cfg),
-        ...createGitTools(this.cfg),
-        ...createHeyctlTools(),
-        ...(this.mcp ? createMcpTools(this.mcp) : []),
-      ],
+      // A subagent context deliberately carries no askBridge/planBridge/
+      // subagents, so even a preset naming ask_user or run_subagent could not
+      // grant them: a subagent cannot talk to the user or fan out further.
+      tools: toolset.tools,
+      customTools: toolset.customTools,
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(this.cfg.workdir),
       settingsManager: SettingsManager.inMemory(),
@@ -274,7 +248,7 @@ export class SubagentManager {
       // coding agent that changed something and reported no verification gets
       // exactly one follow-up turn to go and run the checks. Planning runs have
       // no mutating tools, so this never fires for them.
-      const changedSomething = MUTATING_TOOLS.some((t) => toolsUsed.has(t));
+      const changedSomething = CHANGE_EVIDENCE_TOOLS.some((t) => toolsUsed.has(t));
       if (pool === "maxcoding" && changedSomething && !hasVerification(report)) {
         await session.prompt(VERIFICATION_REMINDER);
         if (signal?.aborted) throw new Error("subagent aborted");

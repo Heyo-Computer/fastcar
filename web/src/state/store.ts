@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type {
+  AgentDef,
   AgentName,
+  InboxItem,
+  ModelsResponse,
+  Schedule,
+  ToolInfoRow,
   ArtifactNode,
   CommandSpec,
   PendingInteraction,
@@ -14,6 +19,7 @@ import type {
   UsageSummary,
 } from "@fastcar/shared";
 import { fetchCommands } from "../lib/suggestions.ts";
+import { navigate, parseHash, type Route } from "../lib/router.ts";
 
 // ---------------------------------------------------------------- chat items
 
@@ -68,8 +74,21 @@ interface ThreadChat {
 
 export interface AppState {
   connection: "connecting" | "open" | "closed";
+  /** The current view. The hash is the source of truth; this mirrors it. */
+  route: Route;
   threads: ThreadMeta[];
+  /**
+   * Derived from `route`, kept so the many components that ask "which thread
+   * is open" do not each have to narrow the route union.
+   */
   selectedId: string | null;
+  agents: AgentDef[];
+  inbox: InboxItem[];
+  unreadByAgent: Record<string, number>;
+  totalUnread: number;
+  schedules: Schedule[];
+  toolCatalog: ToolInfoRow[];
+  modelCatalog: ModelsResponse["providers"];
   chats: Record<string, ThreadChat>;
   pending: Record<string, PendingInteraction | null>;
   /** Webhook delivery status for prompt threads (Feature 3). */
@@ -91,7 +110,15 @@ export interface AppState {
 
   setConnection(c: AppState["connection"]): void;
   handleServer(msg: ServerMessage): void;
+  setRoute(r: Route): void;
   selectThread(id: string | null): void;
+  loadAgents(): Promise<void>;
+  loadThreadsForAgent(agentId: string): Promise<void>;
+  loadInbox(): Promise<void>;
+  loadSchedules(): Promise<void>;
+  loadToolCatalog(): Promise<void>;
+  loadModelCatalog(): Promise<void>;
+  markRead(threadId: string): Promise<void>;
   loadHistory(id: string): Promise<void>;
   loadRepos(): Promise<void>;
   loadMcpServers(): Promise<void>;
@@ -140,13 +167,20 @@ function findSub(items: ChatItem[], agent: AgentName, taskId: string): SubActivi
   return sub;
 }
 
-function applyStreamEvent(
+export function applyStreamEvent(
   items: ChatItem[],
   agent: AgentName,
   taskId: string | undefined,
   ev: StreamEvent,
 ): void {
-  if (agent !== "conductor" && taskId) {
+  // `taskId` alone is the discriminator: it is set only for subagent events
+  // (ThreadManager.onSubagentEvent), and findSub needs it regardless to locate
+  // the owning run_subagent card via `taskId.split(":")[0]`. The previous
+  // `agent !== "conductor" && taskId` was equivalent — no event is ever both
+  // conductor-authored and task-scoped — but it implied the agent name carries
+  // meaning here, which it does not, and which stops being true at a glance
+  // once the top-level agent is user-defined rather than literally "conductor".
+  if (taskId) {
     const sub = findSub(items, agent, taskId);
     if (!sub) return;
     switch (ev.kind) {
@@ -273,12 +307,13 @@ function applyStreamEvent(
   }
 }
 
-function applyPersistedEvent(items: ChatItem[], row: PersistedEvent): void {
+export function applyPersistedEvent(items: ChatItem[], row: PersistedEvent): void {
   const { agent, kind, payload } = row;
   const taskId = row.taskId ?? undefined;
 
-  if (agent !== "conductor" && taskId) {
-    // Subagent history rows nest under their tool card.
+  if (taskId) {
+    // Subagent history rows nest under their tool card. Same discriminator as
+    // applyStreamEvent above — these two reducers must stay in step.
     if (kind === "assistant_text") {
       const sub = findSub(items, agent, taskId);
       if (sub) {
@@ -379,8 +414,16 @@ function compactArgs(args: unknown): string {
 
 export const useStore = create<AppState>((set, get) => ({
   connection: "connecting",
+  route: parseHash(),
   threads: [],
-  selectedId: null,
+  selectedId: parseHash().name === "thread" ? (parseHash() as { threadId: string }).threadId : null,
+  agents: [],
+  inbox: [],
+  unreadByAgent: {},
+  totalUnread: 0,
+  schedules: [],
+  toolCatalog: [],
+  modelCatalog: [],
   chats: {},
   pending: {},
   promptStatus: {},
@@ -404,12 +447,24 @@ export const useStore = create<AppState>((set, get) => ({
         set({ threads: msg.threads });
         void get().loadRepos();
         void get().loadMcpServers();
+        void get().loadAgents();
+        void get().loadInbox();
+        void get().loadSchedules();
         break;
       case "repos_updated":
         set({ repos: msg.repos });
         break;
       case "mcp_servers_updated":
         set({ mcpServers: msg.servers });
+        break;
+      case "agents_updated":
+        set({ agents: msg.agents });
+        break;
+      case "schedules_updated":
+        set({ schedules: msg.schedules });
+        break;
+      case "inbox_counts":
+        set({ unreadByAgent: msg.unreadByAgent, totalUnread: msg.totalUnread });
         break;
       case "artifacts_updated":
         void get().loadArtifacts(msg.threadId);
@@ -418,9 +473,15 @@ export const useStore = create<AppState>((set, get) => ({
         const threads = [msg.thread, ...state.threads.filter((t) => t.id !== msg.thread.id)];
         const patch: Partial<AppState> = { threads };
         if (state.awaitingCreatedThread) {
-          patch.selectedId = msg.thread.id;
           patch.awaitingCreatedThread = false;
           patch.chats = { ...state.chats, [msg.thread.id]: { items: [], loaded: true } };
+          // Navigating sets selectedId via setRoute, so the URL and the open
+          // thread cannot disagree.
+          navigate({ name: "thread", threadId: msg.thread.id });
+        } else if (state.route.name === "inbox" || state.route.name === "agent") {
+          // A thread appearing while the inbox is open (a schedule firing, say)
+          // should show up without a refresh.
+          void get().loadInbox();
         }
         set(patch);
         break;
@@ -435,20 +496,36 @@ export const useStore = create<AppState>((set, get) => ({
         delete pending[msg.threadId];
         delete promptStatus[msg.threadId];
         delete artifactTrees[msg.threadId];
-        // Deleting the open thread falls through to the next most recent one.
-        const selectedId =
-          state.selectedId === msg.threadId ? (threads[0]?.id ?? null) : state.selectedId;
-        set({ threads, chats, pending, promptStatus, artifactTrees, selectedId });
-        if (selectedId && selectedId !== state.selectedId && !chats[selectedId]?.loaded) {
-          void get().loadHistory(selectedId);
-        }
+        const inbox = state.inbox.filter((i) => i.threadId !== msg.threadId);
+        set({ threads, chats, pending, promptStatus, artifactTrees, inbox });
+        // Deleting the thread you are looking at returns you to the inbox
+        // rather than silently swapping in someone else's thread.
+        if (state.selectedId === msg.threadId) navigate({ name: "inbox", filter: "all" });
         break;
       }
       case "thread_updated": {
         const threads = state.threads.map((t) => (t.id === msg.thread.id ? msg.thread : t));
         if (!threads.some((t) => t.id === msg.thread.id)) threads.unshift(msg.thread);
         threads.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-        set({ threads });
+        // Keep the open inbox list in step without refetching: the broadcast
+        // already carries everything a row shows except the preview text.
+        const inbox = state.inbox.map((i) =>
+          i.threadId === msg.thread.id
+            ? {
+                ...i,
+                title: msg.thread.title,
+                status: msg.thread.status,
+                mode: msg.thread.mode,
+                unread: msg.thread.unread ?? i.unread,
+                needsYou:
+                  msg.thread.status === "awaiting_input" ||
+                  msg.thread.status === "awaiting_approval",
+                preview: msg.thread.lastMessagePreview ?? i.preview,
+                lastMessageAt: msg.thread.lastMessageAt ?? i.lastMessageAt,
+              }
+            : i,
+        );
+        set({ threads, inbox });
         break;
       }
       case "status": {
@@ -512,10 +589,99 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  /**
+   * Called by the hashchange listener in main.tsx. `selectedId` is derived
+   * here so there is exactly one place that reads the route union, and the
+   * lazy loads a thread needs happen whether you clicked a link, hit back, or
+   * pasted a URL.
+   */
+  setRoute: (route) => {
+    const selectedId = route.name === "thread" ? route.threadId : null;
+    set({ route, selectedId });
+    if (selectedId) {
+      if (!get().chats[selectedId]?.loaded) void get().loadHistory(selectedId);
+      if (!get().artifactTrees[selectedId]) void get().loadArtifacts(selectedId);
+      // Opening a thread is what marks it read; the broadcast keeps other tabs
+      // and the sidebar counts in step.
+      void get().markRead(selectedId);
+    }
+    if (route.name === "inbox") void get().loadInbox();
+    if (route.name === "schedules") void get().loadSchedules();
+    if (route.name === "agentNew" || route.name === "agentEdit") {
+      void get().loadToolCatalog();
+      void get().loadModelCatalog();
+    }
+  },
+
+  /** Navigating is the only way to open a thread — the URL leads. */
   selectThread: (id) => {
-    set({ selectedId: id });
-    if (id && !get().chats[id]?.loaded) void get().loadHistory(id);
-    if (id && !get().artifactTrees[id]) void get().loadArtifacts(id);
+    if (id) navigate({ name: "thread", threadId: id });
+    else navigate({ name: "inbox", filter: "all" });
+  },
+
+  loadAgents: async () => {
+    const res = await fetch("/api/agents");
+    if (!res.ok) return;
+    const data = (await res.json()) as { agents: AgentDef[] };
+    set({ agents: data.agents });
+  },
+
+  /**
+   * Threads owned by one agent. `hello` only carries a recent window, so a
+   * quiet agent's threads have to be fetched when you open it.
+   */
+  loadThreadsForAgent: async (agentId) => {
+    const res = await fetch(`/api/threads?agentId=${agentId}&limit=200`);
+    if (!res.ok) return;
+    const data = (await res.json()) as { threads: ThreadMeta[] };
+    set((state) => {
+      const byId = new Map(state.threads.map((t) => [t.id, t]));
+      for (const t of data.threads) byId.set(t.id, t);
+      const threads = [...byId.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+      return { threads };
+    });
+  },
+
+  loadInbox: async () => {
+    const r = get().route;
+    const params = new URLSearchParams();
+    if (r.name === "inbox" && r.filter !== "all") params.set("filter", r.filter);
+    if (r.name === "agent") params.set("agentId", r.agentId);
+    const res = await fetch(`/api/inbox?${params}`);
+    if (!res.ok) return;
+    const data = (await res.json()) as {
+      items: InboxItem[];
+      unreadByAgent: Record<string, number>;
+      totalUnread: number;
+    };
+    set({ inbox: data.items, unreadByAgent: data.unreadByAgent, totalUnread: data.totalUnread });
+  },
+
+  loadSchedules: async () => {
+    const res = await fetch("/api/schedules");
+    if (!res.ok) return;
+    const data = (await res.json()) as { schedules: Schedule[] };
+    set({ schedules: data.schedules });
+  },
+
+  loadToolCatalog: async () => {
+    if (get().toolCatalog.length) return;
+    const res = await fetch("/api/tools");
+    if (!res.ok) return;
+    const data = (await res.json()) as { tools: ToolInfoRow[] };
+    set({ toolCatalog: data.tools });
+  },
+
+  loadModelCatalog: async () => {
+    if (get().modelCatalog.length) return;
+    const res = await fetch("/api/models");
+    if (!res.ok) return;
+    const data = (await res.json()) as ModelsResponse;
+    set({ modelCatalog: data.providers });
+  },
+
+  markRead: async (threadId) => {
+    await fetch(`/api/inbox/${threadId}/read`, { method: "POST" }).catch(() => {});
   },
 
   loadRepos: async () => {
@@ -554,14 +720,23 @@ export const useStore = create<AppState>((set, get) => ({
     const res = await fetch(`/api/threads/${id}/events`);
     if (!res.ok) return;
     const data = (await res.json()) as {
+      thread: ThreadMeta;
       events: PersistedEvent[];
       pending: PendingInteraction | null;
     };
     const items: ChatItem[] = [];
     for (const row of data.events) applyPersistedEvent(items, row);
-    set((state) => ({
-      chats: { ...state.chats, [id]: { items, loaded: true } },
-      pending: { ...state.pending, [id]: data.pending },
-    }));
+    set((state) => {
+      // The history response carries the thread meta, which is how a deep link
+      // to a thread outside the `hello` window still renders.
+      const threads = state.threads.some((t) => t.id === id)
+        ? state.threads
+        : [data.thread, ...state.threads].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+      return {
+        threads,
+        chats: { ...state.chats, [id]: { items, loaded: true } },
+        pending: { ...state.pending, [id]: data.pending },
+      };
+    });
   },
 }));

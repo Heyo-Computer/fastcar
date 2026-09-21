@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ClientMessage, ServerMessage } from "@fastcar/shared";
-import { listThreads, toMeta } from "../db/threads.js";
+import { listThreads } from "../db/threads.js";
+import { threadMeta } from "../services/threadMeta.js";
 import { callerFromRequest } from "../http/auth.js";
 import type { Config } from "../config.js";
 import type { ThreadManager } from "../threads/manager.js";
@@ -12,7 +13,14 @@ export function registerWs(app: FastifyInstance, manager: ThreadManager, cfg: Co
     };
     const removeClient = manager.addClient(send);
 
-    void listThreads().then((threads) => send({ type: "hello", threads: threads.map(toMeta) }));
+    // A bounded recent window, not every thread. With several agents each
+    // producing a thread per scheduled run, the old unbounded list filled up
+    // with scheduled runs and pushed interactive threads out of it entirely.
+    // Views load what they need: per agent via GET /api/threads?agentId=, and
+    // a single thread via its history endpoint.
+    void listThreads({ limit: 50 }).then((threads) =>
+      send({ type: "hello", threads: threads.map((t) => threadMeta(cfg, t)) }),
+    );
 
     socket.on("message", (raw: Buffer) => {
       void (async () => {
@@ -34,7 +42,7 @@ export function registerWs(app: FastifyInstance, manager: ThreadManager, cfg: Co
         try {
           switch (msg.type) {
             case "create_thread":
-              await manager.createThread(msg.mode ?? "act");
+              await manager.createThread(msg.mode ?? "act", msg.agentId);
               break;
             case "create_prompt_thread":
               await manager.createPromptThread({
@@ -104,6 +112,12 @@ export function registerWs(app: FastifyInstance, manager: ThreadManager, cfg: Co
               break;
             case "abort":
               await manager.abort(msg.threadId);
+              break;
+            case "mark_read":
+              await manager.markRead(msg.threadId);
+              break;
+            case "mark_all_read":
+              await manager.markAllRead(msg.agentId);
               break;
             case "steer":
               await manager.steer(msg.threadId, msg.text);

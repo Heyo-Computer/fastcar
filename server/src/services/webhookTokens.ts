@@ -72,6 +72,7 @@ function saveAll(cfg: Config, data: TokenFile): void {
 
 /** Prefix for trigger tokens in the store, namespaced apart from webhook tokens. */
 const TRIGGER_KEY = (threadId: string) => `trigger:${threadId}`;
+const SCHEDULE_KEY = (scheduleId: string) => `schedule:${scheduleId}`;
 
 /** Generate a random trigger token (~32 url-safe chars) for a prompt thread. */
 export function generateTriggerToken(): string {
@@ -119,6 +120,28 @@ export class WebhookTokenStore {
   deleteTriggerToken(threadId: string): void {
     const all = loadAll(this.cfg);
     delete all[TRIGGER_KEY(threadId)];
+    saveAll(this.cfg, all);
+  }
+
+  // ------------------------------------------------------- schedule tokens
+  // A schedule may POST its result to a webhook, same as a prompt thread.
+  // Third namespace in the same file, keyed `schedule:<scheduleId>`.
+
+  setScheduleToken(scheduleId: string, token: string): void {
+    const all = loadAll(this.cfg);
+    all[SCHEDULE_KEY(scheduleId)] = encrypt(token, this.cfg);
+    saveAll(this.cfg, all);
+  }
+
+  getScheduleToken(scheduleId: string): string {
+    const all = loadAll(this.cfg);
+    const enc = all[SCHEDULE_KEY(scheduleId)];
+    return enc ? decrypt(enc, this.cfg) : "";
+  }
+
+  deleteScheduleToken(scheduleId: string): void {
+    const all = loadAll(this.cfg);
+    delete all[SCHEDULE_KEY(scheduleId)];
     saveAll(this.cfg, all);
   }
 }

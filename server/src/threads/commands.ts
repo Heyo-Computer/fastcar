@@ -16,6 +16,7 @@ import { listMemories, searchMemories } from "../db/memories.js";
 import { listAgents } from "../pi/agentsConfig.js";
 import { collectRepoStatuses, purgeRepo, PurgeRefusedError } from "../services/git.js";
 import type { McpManager } from "../services/mcp.js";
+import type { AgentService } from "../services/agents.js";
 
 export interface CommandContext {
   cfg: Config;
@@ -30,6 +31,8 @@ export interface CommandContext {
   rename: (title: string) => Promise<string>;
   /** MCP registry, when the server runs with one. */
   mcp?: McpManager;
+  /** Agent registry, when the server runs with one. */
+  agents?: AgentService;
 }
 
 interface CommandDef extends CommandSpec {
@@ -241,15 +244,37 @@ const COMMANDS: CommandDef[] = [
   },
   {
     name: "agents",
-    summary: "Subagents the conductor can delegate to, and their models",
+    summary: "Agents that own threads, and the subagents they delegate to",
     scope: "server",
-    run: async ({ cfg }) => {
-      const lines = listAgents().map((a) => {
+    run: async ({ cfg, agents }) => {
+      const out: string[] = [];
+
+      // Two distinct concepts, deliberately kept apart: agents own threads and
+      // are created by the user; subagents are delegation pools inside a run.
+      const rows = agents ? await agents.list() : [];
+      if (rows.length) {
+        out.push("### Agents");
+        for (const rec of rows) {
+          const r = agents!.resolve(rec);
+          out.push(
+            `- ${rec.avatar ?? ""} **${rec.name}** \`${r.modelProvider}/${r.modelSlug}\`` +
+              ` — ${r.tools.length} tools, ${r.reasoningEffort} effort` +
+              (rec.isBuiltin ? " _(built in)_" : "") +
+              (rec.description ? `\n  ${rec.description}` : ""),
+          );
+        }
+        out.push("");
+      }
+
+      const subs = listAgents().map((a) => {
         const model = modelFor(cfg, a.name);
         return `- **${a.name}**${model ? ` \`${model}\`` : ""} — ${a.description || "no description"}`;
       });
-      if (!lines.length) return "No subagents configured in agents.yaml.";
-      return ["### Subagents", ...lines, "", "Reference one in a message with `@name`."].join("\n");
+      if (subs.length) {
+        out.push("### Delegation subagents", ...subs, "", "Reference one in a message with `@name`.");
+      }
+
+      return out.length ? out.join("\n") : "No agents or subagents configured.";
     },
   },
   {

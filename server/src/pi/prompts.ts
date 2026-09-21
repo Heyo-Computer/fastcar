@@ -154,3 +154,113 @@ You cannot talk to the user; the conductor relays your questions and returns wit
 You have the \`heyctl\` tool, which drives app-lb's admin API. In this read-only planning run you may use only its read verbs — \`get\`, \`describe\`, \`top\`, \`status\`, \`whoami\`, \`rollout status\` — to inspect deployments, pools and certificates. Do not run any subcommand that creates, scales, sets, applies, restarts, builds, pulls, edits or deletes: those mutate state. Run \`heyctl <subcommand> --help\` to understand an unfamiliar verb's flags before using it.`;
 
 export const MINIMODEL_PROMPT = `You are a fast research assistant with read-only file access and web search. Complete the delegated task efficiently and return a concise, factual report. Do not attempt to modify anything. If information is missing, say so plainly.`;
+
+
+// ---------------------------------------------------------------------------
+// User-created agents
+// ---------------------------------------------------------------------------
+
+/**
+ * Capability guidance, keyed by the tool that makes it relevant.
+ *
+ * These are lifted from CONDUCTOR_BASE so a user-created agent gets the same
+ * hard-won instructions for the tools it actually holds — a news curator has no
+ * business being told about codegraph or heyctl. CONDUCTOR_BASE itself is
+ * deliberately left intact rather than reassembled from these fragments: the
+ * mock LLM branches on substrings of it (`mock-openai.ts` checks for "PLANNING
+ * MODE", "senior software engineer" and "plan-writing run"), so rewording it
+ * silently changes which canned reply the mock returns. Decomposing it is a
+ * separate change with its own tests.
+ */
+const CAPABILITY_ADDENDA: Array<{ tools: string[]; text: string }> = [
+  {
+    tools: ["run_subagent"],
+    text: `## Your team — delegate by default
+- **maxcoding** — a heavyweight coding agent with full tool access (read, write, edit, bash, git). It owns the VM and can install anything it needs.
+- **minimodel** — a fast, cheap read-only agent for exploration, lookups, and summarization.
+
+Anything that writes or changes code beyond a single obvious line goes to maxcoding via run_subagent. Delegate unfamiliar-code exploration to minimodel. Independent pieces of work go out together — pass a \`tasks\` array in one run_subagent call so they run in parallel. Every task must state the goal, the acceptance criteria, and how the result should be verified. Subagents cannot talk to the user: state your assumptions in the task, and relay any \`## Questions for the user\` section back through ask_user rather than guessing.`,
+  },
+  {
+    tools: ["ask_user"],
+    text: `## Working with the user
+Use ask_user whenever a requirement is ambiguous or a decision is genuinely the user's to make. Do not guess on destructive or scope-changing choices.`,
+  },
+  {
+    tools: ["memory_save", "memory_search", "memory_list", "memory_delete"],
+    text: `## Memory
+You have persistent memory tools (memory_save, memory_search, memory_list, memory_delete). Save durable facts: user preferences, project constraints, decisions, and useful references. Search memory when context from past sessions could help. Do not save trivia.`,
+  },
+  {
+    tools: ["create_artifact", "update_artifact", "list_artifacts"],
+    text: `## Artifacts — publishing pages and documents
+An artifact is a file attached to this thread, shown in the UI's artifacts panel and served on a **public URL** (\`/artifacts/<id>/<name>\`) that anyone with the link can open without signing in.
+- create_artifact(name, content) — publish an HTML page, markdown document, or other text file. The extension sets the type (\`.html\` → rendered page, \`.md\` → rendered markdown). Returns the id and the public URL.
+- update_artifact(id, content) — replace the content; the id and URL stay stable, so iterate in place instead of creating copies.
+- list_artifacts — ids, types, and URLs for everything on this thread.
+Use artifacts whenever the deliverable is something to *read or look at* rather than a code change. HTML artifacts must be self-contained (inline all CSS/JS, no relative file references, no external scripts you cannot count on). Always paste the public URL into your final answer. Anything on the URL is visible to whoever has the link — do not put secrets in an artifact.`,
+  },
+  {
+    tools: ["git_clone", "git_pull", "git_checkout", "git_commit", "git_push", "git_status", "git_purge", "git_list_repos"],
+    text: `## Git repositories
+The VM hosts registered git repositories (git_list_repos). Use git_clone to add a repository when the user provides a URL, and git_pull / git_checkout / git_commit / git_push to work with them. Prefer the git_* tools over raw bash git so the repository registry and UI stay in sync.`,
+  },
+  {
+    tools: ["heyctl"],
+    text: `## heyctl — controlling app-lb
+heyctl is a kubectl-shaped CLI for app-lb's admin API. Drive it with the \`heyctl\` tool: pass a \`subcommand\` and an \`args\` array exactly as you would at a shell. For nested subcommands like \`token mint\`, put the whole path in \`subcommand\`. Read verbs (get, describe, top, status, whoami) are safe; anything that creates, scales, sets, applies, restarts or deletes is mutating — confirm with the user before changing a production deployment.`,
+  },
+  {
+    tools: ["mcp_install", "mcp_remove", "mcp_list_servers", "mcp_list_tools", "mcp_call"],
+    text: `## MCP servers — extending your tools
+mcp_list_servers / mcp_list_tools(server) show what is installed and each tool's argument schema; mcp_call(server, tool, arguments) invokes one. Tools marked DESTRUCTIVE change external systems: confirm with the user first.`,
+  },
+  {
+    tools: ["bash"],
+    text: `## Searching code
+When a repository carries a codegraph symbol index, prefer it over grep and full-file reads for *code*: \`codegraph --text search <name>\`, \`definition <name>\`, \`outline <file>\` (signatures only), \`snippet <file> <symbol>\`, \`references <name>\`. It covers rust/python/js/ts symbols only — grep still owns string literals, config, SQL, shell and markdown. Re-run \`codegraph index\` after edits.`,
+  },
+  {
+    tools: ["browser_check"],
+    text: `## Checking web pages
+browser_check drives a headless Chromium: it loads a URL, optionally clicks/fills/types, and reports JS page errors, console errors, failed requests, the rendered text, and a screenshot path. Reproduce a UI bug with it before fixing, and run it again afterwards to prove the fix.`,
+  },
+];
+
+/**
+ * Build the system prompt for whichever agent owns a thread.
+ *
+ * The builtin conductor returns conductorPrompt() unchanged — byte for byte
+ * the prompt it had before agents existed, which is what keeps every existing
+ * behaviour and the mock LLM's substring heuristics intact.
+ */
+export function composeAgentPrompt(
+  agent: { systemPrompt: string | null; tools: string[]; supportsPlanMode: boolean },
+  mode: ThreadMode,
+  memories: Memory[],
+  mcpSummary = "",
+): string {
+  if (agent.systemPrompt === null) return conductorPrompt(mode, memories, mcpSummary);
+
+  const held = new Set(agent.tools);
+  const parts = [agent.systemPrompt.trim()];
+  for (const { tools, text } of CAPABILITY_ADDENDA) {
+    if (tools.some((t) => held.has(t))) parts.push(text);
+  }
+  let prompt = parts.join("\n\n");
+
+  if (mcpSummary) {
+    prompt += `\n\n## Installed MCP servers\n${mcpSummary}\nUse mcp_list_tools for argument schemas and mcp_call to invoke.`;
+  }
+  if (memories.length) {
+    const lines = memories
+      .map((m) => `- ${m.content}${m.tags.length ? ` [${m.tags.join(", ")}]` : ""}`)
+      .join("\n");
+    prompt += `\n\n## Memories (from previous sessions)\n${lines}`;
+  }
+  // Only meaningful when the agent can actually finish a plan-mode turn.
+  if (mode === "plan" && agent.supportsPlanMode && held.has("submit_plan")) {
+    prompt += PLAN_MODE_ADDENDUM;
+  }
+  return prompt;
+}

@@ -23,7 +23,8 @@
     "smoke:ws": "cd server && npm run smoke:ws",
     "smoke:git": "cd server && npm run smoke:git",
     "start": "cd server && npm run start",
-    "test": "cd server && npm run test"
+    "test": "cd server && npm run test",
+    "test:web": "tsx --test web/src/state/*.test.ts web/src/lib/*.test.ts"
   },
   "engines": {
     "node": ">=22.19.0"
