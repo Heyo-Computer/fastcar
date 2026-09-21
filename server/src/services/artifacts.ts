@@ -86,6 +86,21 @@ export class ArtifactService {
     return `${this.cfg.publicUrl}${this.publicPath(artifact)}`;
   }
 
+  /**
+   * A caveat for the agent when links use the localhost fallback. Without it
+   * the model hands out `http://localhost:3000/...` as confidently as a real
+   * link — which is how a missing FASTCAR_PUBLIC_URL goes unnoticed until
+   * someone else tries to open one. Empty when the public URL was configured.
+   */
+  localOnlyNote(): string {
+    if (this.cfg.publicUrlFromEnv) return "";
+    return (
+      `\nNote: FASTCAR_PUBLIC_URL is not set, so this link uses ${this.cfg.publicUrl} and opens only on ` +
+      `the machine running fastcar — it is not shareable. Say so if the user may want to send it to someone; ` +
+      `the fix is to set FASTCAR_PUBLIC_URL to the address people reach fastcar at.`
+    );
+  }
+
   publicPath(artifact: Pick<Artifact, "id" | "name">): string {
     return `${PUBLIC_ARTIFACT_PREFIX}${artifact.id}/${encodeURIComponent(artifact.name)}`;
   }

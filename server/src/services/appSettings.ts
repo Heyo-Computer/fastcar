@@ -61,6 +61,10 @@ export class AppSettings {
 
   get(): AppSettingsResponse {
     return {
+      server: {
+        publicUrl: this.cfg.publicUrl,
+        publicUrlFromEnv: this.cfg.publicUrlFromEnv,
+      },
       conductor: {
         model: `inceptionlabs/${this.cfg.inceptionModel}`,
         reasoningEffort: this.conductorReasoningEffort(),

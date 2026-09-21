@@ -12,6 +12,7 @@ import { AgentView } from "./views/AgentView.tsx";
 import { AgentBuilderView } from "./views/AgentBuilderView.tsx";
 import { SchedulesView } from "./views/SchedulesView.tsx";
 import { ThreadView } from "./views/ThreadView.tsx";
+import { PublicUrlBanner } from "./components/PublicUrlBanner.tsx";
 
 /** A thread route whose thread has not arrived over the wire yet. */
 function ThreadRoute({ threadId }: { threadId: string }) {
@@ -74,6 +75,7 @@ export default function App() {
       </div>
 
       <main className="flex min-w-0 flex-1 flex-col">
+        <PublicUrlBanner />
         {route.name === "inbox" && <InboxView filter={route.filter} />}
         {route.name === "agents" && <AgentsView />}
         {route.name === "agent" && <AgentView agentId={route.agentId} tab={route.tab} />}

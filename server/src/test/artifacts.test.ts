@@ -50,6 +50,7 @@ function tempConfig(dataDir: string): Config {
     adminToken: undefined,
     defaultOwner: null,
     publicUrl: "http://public.test",
+    publicUrlFromEnv: true,
   };
 }
 

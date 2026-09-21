@@ -50,6 +50,14 @@ export interface Config {
    * and the UI. Defaults to http://localhost:<port>.
    */
   publicUrl: string;
+  /**
+   * False when publicUrl is the localhost fallback because FASTCAR_PUBLIC_URL
+   * was not set. The fallback is right for local development and wrong
+   * everywhere else — every artifact link and the OAuth redirect for remote
+   * MCP servers then point at a machine nobody else can reach — so this is
+   * surfaced at boot, in the UI and in the agent's tool results.
+   */
+  publicUrlFromEnv: boolean;
 }
 
 /**
@@ -82,6 +90,34 @@ function subagentProviderEnv(name: string, fallback: SubagentProvider): Subagent
   return value;
 }
 
+/** Names people reach for instead of FASTCAR_PUBLIC_URL. */
+const PUBLIC_URL_LOOKALIKES = ["PUBLIC_URL", "BASE_URL", "APP_URL", "FASTCAR_BASE_URL", "FASTCAR_URL", "SITE_URL"];
+
+/**
+ * Say loudly when the public URL is the localhost fallback. Not an error — it
+ * is exactly right for local development — but in a deployment it silently
+ * produces links nobody else can open, which is how this went unnoticed.
+ * A lookalike variable is called out by name, since "I set the base URL" is
+ * the usual way this happens.
+ */
+function warnAboutPublicUrl(port: number): void {
+  if (env("FASTCAR_PUBLIC_URL")) return;
+  const lookalike = PUBLIC_URL_LOOKALIKES.find((n) => env(n));
+  const lines = [
+    `FASTCAR_PUBLIC_URL is not set, so fastcar is using http://localhost:${port} as its public address.`,
+    "Artifact links, prompt-thread trigger URLs and the OAuth redirect for remote MCP servers",
+    "will all point at localhost — fine on your own machine, broken for anyone else.",
+  ];
+  if (lookalike) {
+    lines.push(
+      `${lookalike}=${env(lookalike)} is set, but fastcar reads FASTCAR_PUBLIC_URL — rename it.`,
+    );
+  } else {
+    lines.push("Set it to the origin your browser uses, e.g. FASTCAR_PUBLIC_URL=https://fastcar.example.com");
+  }
+  console.warn(`\n⚠  ${lines.join("\n   ")}\n`);
+}
+
 export function loadConfig(): Config {
   const mock = env("FASTCAR_MOCK") === "1";
   const mockPort = Number(env("FASTCAR_MOCK_PORT") ?? 3210);
@@ -110,6 +146,7 @@ export function loadConfig(): Config {
   fs.mkdirSync(sessionDir, { recursive: true });
 
   const port = Number(env("PORT") ?? 3000);
+  warnAboutPublicUrl(port);
   return {
     port,
     databaseUrl,
@@ -140,5 +177,6 @@ export function loadConfig(): Config {
     adminToken: env("FASTCAR_ADMIN_TOKEN"),
     defaultOwner: env("FASTCAR_DEFAULT_OWNER") ?? null,
     publicUrl: (env("FASTCAR_PUBLIC_URL") ?? `http://localhost:${port}`).replace(/\/+$/, ""),
+    publicUrlFromEnv: Boolean(env("FASTCAR_PUBLIC_URL")),
   };
 }

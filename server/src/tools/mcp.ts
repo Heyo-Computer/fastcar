@@ -29,24 +29,38 @@ export function createMcpTools(mcp: McpManager, allowedServers?: readonly string
     name: "mcp_install",
     label: "Install MCP Server",
     description:
-      "Install an MCP server from a GitHub URL (e.g. https://github.com/org/repo/tree/main/mcp — the ref and subdirectory are read from the URL), any git URL, or a local path, then start it and register it so its tools can be called with mcp_call. Node projects are built automatically (npm install, npm run build, entry point from package.json bin/main); pass command/args for anything else. Pass env for the configuration the server's README asks for (API URLs, tokens) — values are stored encrypted. Remote servers: transport=\"http\" with the endpoint as source. Returns the tool list. Ask the user (ask_user) for any credentials the server needs rather than guessing.",
+      "Install an MCP server so its tools can be called with mcp_call. Two kinds of source:\n" +
+      "- A DEPLOYED server: pass its endpoint URL (e.g. https://mcp.example.com/mcp or …/sse). Nothing is cloned. The transport is negotiated automatically — Streamable HTTP first, falling back to the older HTTP+SSE — so just pass the URL. If the server takes an API key, pass it as headers: {\"Authorization\": \"Bearer <key>\"}. If it uses OAuth, the result says sign-in is required and gives a URL: the install is NOT finished — give that URL to the user to open, and tell them to come back once they see 'Connected'. You cannot open it yourself.\n" +
+      "- CODE to run locally: a GitHub URL (https://github.com/org/repo/tree/main/mcp — ref and subdirectory come from the URL), any git URL, or a local path. It is cloned and started. Node projects are built automatically (npm install, npm run build, entry from package.json bin/main); pass command/args for anything else, and env for the configuration its README asks for.\n" +
+      "Credentials (env, headers) are stored encrypted. Ask the user (ask_user) for any key or token the server needs rather than guessing. Returns the tool list.",
     parameters: Type.Object({
       source: Type.String({ description: "GitHub tree/blob URL, git URL, local path, or http(s) MCP endpoint" }),
       name: Type.Optional(Type.String({ description: "Registered name (default: derived from the URL)" })),
-      transport: Type.Optional(StringEnum(["stdio", "http"], { description: "stdio (default; installed locally) or http (remote endpoint)" })),
+      transport: Type.Optional(
+        StringEnum(["stdio", "http", "sse"], {
+          description:
+            "Usually omit: inferred from the source. stdio = clone and run locally; http = deployed server (negotiates Streamable HTTP, then HTTP+SSE); sse = force the legacy HTTP+SSE transport.",
+        }),
+      ),
       subpath: Type.Optional(Type.String({ description: "Directory inside the repo holding the server (default: from the URL, else the root)" })),
       ref: Type.Optional(Type.String({ description: "Branch, tag or commit (default: from the URL, else the default branch)" })),
       command: Type.Optional(Type.String({ description: "Launch command override (e.g. \"uv\" or \"python\")" })),
       args: Type.Optional(Type.Array(Type.String(), { description: "Arguments for the launch command" })),
       env: Type.Optional(Type.Object({}, { additionalProperties: true, description: "Environment variables for the server process (name → value)" })),
-      headers: Type.Optional(Type.Object({}, { additionalProperties: true, description: "HTTP headers for http servers (e.g. Authorization)" })),
+      headers: Type.Optional(
+        Type.Object({}, {
+          additionalProperties: true,
+          description:
+            'HTTP headers for a deployed server, e.g. {"Authorization": "Bearer <api key>"}. Omit for servers that use OAuth sign-in.',
+        }),
+      ),
     }),
     execute: async (_id, params, signal, onUpdate) => {
       const status = await mcp.install(
         {
           source: params.source,
           name: params.name,
-          transport: params.transport as "stdio" | "http" | undefined,
+          transport: params.transport as "stdio" | "http" | "sse" | undefined,
           subpath: params.subpath,
           ref: params.ref,
           command: params.command,
@@ -59,13 +73,37 @@ export function createMcpTools(mcp: McpManager, allowedServers?: readonly string
           log: (line) => onUpdate?.({ content: [{ type: "text", text: line }], details: {} }),
         },
       );
+      // A deployed server that uses OAuth: the install is paused on a person.
+      // Say so plainly, or the model will report success it did not have.
+      if (status.status === "needs_auth") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                `MCP server "${status.name}" (${status.url}) requires signing in before it can be used. It is NOT installed yet.`,
+                "",
+                `Give the user this link to sign in:`,
+                status.authorizationUrl ?? "(no sign-in URL was returned — ask the user to retry from Settings → MCP)",
+                "",
+                `Once they have signed in, the server appears in mcp_list_servers as connected and its tools can be called. If they report a problem, the sign-in link expires after 30 minutes — run mcp_install again for a fresh one.`,
+              ].join("\n"),
+            },
+          ],
+          details: { name: status.name, needsAuth: true },
+        };
+      }
+
       const tools = status.tools.map((t) => `- ${t.name}${t.description ? ` — ${firstLine(t.description)}` : ""}`);
+      const where = status.transport === "stdio"
+        ? `local, ${status.path}`
+        : `${status.transport === "sse" ? "HTTP+SSE" : "Streamable HTTP"}, ${status.url}${status.auth === "none" ? "" : `, auth: ${status.auth}`}`;
       return {
         content: [
           {
             type: "text",
             text: [
-              `Installed MCP server "${status.name}" (${status.transport}${status.path ? `, ${status.path}` : ""}${status.url ? `, ${status.url}` : ""}).`,
+              `Installed MCP server "${status.name}" (${where}).`,
               `${status.tools.length} tool(s):`,
               ...tools,
               "",
@@ -108,7 +146,12 @@ export function createMcpTools(mcp: McpManager, allowedServers?: readonly string
       const text = statuses.length
         ? statuses
             .map((s) => {
-              const state = s.status === "connected" ? "connected" : `${s.status}${s.error ? `: ${s.error}` : ""}`;
+              const state =
+                s.status === "connected"
+                  ? "connected"
+                  : s.status === "needs_auth"
+                    ? `needs sign-in — ask the user to open ${s.authorizationUrl ?? "Settings → MCP"}`
+                    : `${s.status}${s.error ? `: ${s.error}` : ""}`;
               return `- ${s.name} (${s.transport}, ${state}) — ${s.tools.length} tool(s): ${s.tools.map((t) => t.name).join(", ") || "(none)"}`;
             })
             .join("\n")

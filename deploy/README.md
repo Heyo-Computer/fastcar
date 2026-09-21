@@ -6,7 +6,7 @@ lifecycle.
 
 ```sh
 ./deploy/build-image.sh                # heyvm mvm build -> ~/.heyo/images/firecracker/fastcar.ext4
-$EDITOR deploy/fastcar.json            # fill REPLACE_ME_* keys + the route host
+$EDITOR deploy/fastcar.json            # fill every REPLACE_ME_* value
 serverctl apply -f deploy/fastcar.json
 serverctl rollout status fastcar
 serverctl exec fastcar -- /opt/fastcar/preflight.sh
@@ -35,8 +35,8 @@ which launches the server. Placeholders to replace before `serverctl apply`:
 | `INCEPTION_API_KEY` | `REPLACE_ME_INCEPTION_API_KEY` — conductor (Mercury) |
 | `OPENROUTER_API_KEY` | `REPLACE_ME_OPENROUTER_API_KEY` — subagents + transcription |
 | `TAVILY_API_KEY` | `REPLACE_ME_TAVILY_API_KEY` — web search |
-| `routes[0].host` | `fastcar.example.com` — the public hostname |
-| `FASTCAR_PUBLIC_URL` | `https://fastcar.example.com` — same host, with scheme; prefix of every public artifact URL |
+| `routes[0].host` | `REPLACE_ME_ROUTE_HOST` — the public hostname, e.g. `fastcar.example.com` |
+| `FASTCAR_PUBLIC_URL` | `https://REPLACE_ME_ROUTE_HOST` — the **same** host with `https://`. Both share one placeholder so they are filled together. |
 | `auth.client_id` / `auth.allowed_domains` | the Google sign-in gate (see below); `client_secret` is a serverctl secret named `google` |
 | `build.repo` | `https://github.com/REPLACE_ME_ORG/fastcar.git` — this repo's remote |
 | `DATABASE_URL` | `postgres://fastcar:REPLACE_ME_DB_PASSWORD@db.example.com:5432/fastcar` — a Postgres **outside** the VM (see "State lives in the workspace") |
@@ -70,7 +70,16 @@ heyctl set auth fastcar --public-path /api/health --public-path /artifacts/
 ```
 
 `FASTCAR_PUBLIC_URL` must be the origin the browser uses (`https://` + the
-route host) — it is what the agent pastes into its answers.
+route host). Every public link is built from it: artifact URLs the agent pastes
+into its answers, prompt-thread trigger URLs, and the OAuth redirect URI that
+remote MCP servers send the browser back to. If it is missing, fastcar falls
+back to `http://localhost:3000` — correct on a laptop, broken for everyone
+else — and says so three ways: a warning at boot (naming any lookalike such as
+`BASE_URL` that was set instead), a banner in the UI when the page is loaded
+from a real hostname, and a caveat on every artifact link the agent receives.
+Links in the artifacts panel and inbox are computed per request, so they
+correct themselves once it is set; links an agent already pasted into a reply
+are text, and do not.
 
 ## Building the rootfs on the server
 

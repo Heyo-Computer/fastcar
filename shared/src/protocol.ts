@@ -171,6 +171,17 @@ export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["instant", "medium
 
 /** GET /api/settings */
 export interface AppSettingsResponse {
+  /** Read-only server facts the UI needs to warn about misconfiguration. */
+  server: {
+    /** The origin every public link is built from (FASTCAR_PUBLIC_URL). */
+    publicUrl: string;
+    /**
+     * False when publicUrl is the localhost fallback because
+     * FASTCAR_PUBLIC_URL was not set. The UI compares publicUrl against the
+     * origin it was actually loaded from to catch a deployment that forgot it.
+     */
+    publicUrlFromEnv: boolean;
+  };
   conductor: {
     /** Provider/model id the conductor runs on, e.g. inceptionlabs/mercury-2.5. */
     model: string;
@@ -512,7 +523,18 @@ export interface PurgeRepoResponse {
 // MCP servers
 // ---------------------------------------------------------------------------
 
-export type McpTransport = "stdio" | "http";
+/**
+ * How fastcar talks to an MCP server.
+ * - `stdio`: a local process, cloned and built into FASTCAR_MCP_DIR.
+ * - `http`:  a deployed server speaking Streamable HTTP (spec 2025-03-26+).
+ * - `sse`:   a deployed server speaking the older HTTP+SSE transport
+ *            (spec 2024-11-05). Negotiated automatically: an `http` install
+ *            that the server rejects falls back to this.
+ */
+export type McpTransport = "stdio" | "http" | "sse";
+
+/** How a remote MCP server is authenticated. */
+export type McpAuth = "none" | "headers" | "oauth";
 
 /** One tool an MCP server advertises, as cached by the registry. */
 export interface McpToolInfo {
@@ -538,8 +560,19 @@ export interface McpServerStatus {
   args?: string[];
   /** Names of configured env vars — values are never sent to the UI. */
   envKeys: string[];
-  status: "connected" | "error" | "stopped";
+  /** Names of configured HTTP headers (remote servers) — values are never sent. */
+  headerKeys: string[];
+  /** How a remote server is authenticated; "none" for local servers. */
+  auth: McpAuth;
+  /**
+   * `needs_auth`: the server wants an OAuth sign-in (first install, or a
+   * refresh token that stopped working). `authorizationUrl` is where to send
+   * the user.
+   */
+  status: "connected" | "error" | "stopped" | "needs_auth";
   error?: string;
+  /** Sign-in URL, present only while status is `needs_auth`. */
+  authorizationUrl?: string;
   tools: McpToolInfo[];
   createdAt: string;
 }

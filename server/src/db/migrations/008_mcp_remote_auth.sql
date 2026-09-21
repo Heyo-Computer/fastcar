@@ -1,0 +1,12 @@
+-- OAuth credentials for remote MCP servers.
+--
+-- A deployed MCP server that follows the MCP authorization spec answers 401
+-- and points at an OAuth 2.1 authorization server. fastcar registers itself as
+-- a client (dynamic client registration), sends the user to sign in, and keeps
+-- the resulting client registration, tokens and PKCE verifier here — encrypted
+-- with the same key as env_enc/headers_enc (services/secrets.ts), because an
+-- access or refresh token is exactly as sensitive as an API key.
+--
+-- No new column for the transport: mcp_servers.transport is plain text with no
+-- CHECK, so the new 'sse' value (legacy HTTP+SSE deployments) needs nothing.
+ALTER TABLE mcp_servers ADD COLUMN oauth_enc text NOT NULL DEFAULT '';

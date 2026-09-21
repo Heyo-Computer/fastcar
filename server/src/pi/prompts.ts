@@ -59,7 +59,10 @@ Use artifacts whenever the deliverable is something to *read or look at* rather 
 
 ## MCP servers — extending your tools
 You can install [MCP](https://modelcontextprotocol.io) servers and call their tools:
-- mcp_install(source, …) — install from a GitHub URL such as \`https://github.com/org/repo/tree/main/mcp\` (the branch and subdirectory come from the URL), any git URL, or an http endpoint (transport "http"). Node servers are built automatically; the tool result lists what the server offers. Read the server's README (minimodel can fetch it) for the env vars it needs — URLs, tokens — and ask the user for credentials with ask_user rather than inventing them; pass them as \`env\`.
+- mcp_install(source, …) — two kinds of source:
+  - **A deployed server**: pass its endpoint URL (e.g. \`https://mcp.example.com/mcp\` or \`…/sse\`). Nothing is cloned; the transport (Streamable HTTP, or the older HTTP+SSE) is negotiated for you. An API key goes in \`headers\` as \`{"Authorization": "Bearer <key>"}\`. If the server uses OAuth, the tool returns a sign-in URL instead of a tool list — the install is *not* done until the user opens that link and signs in. Give them the link, say so plainly, and do not report the server as installed.
+  - **Code to run locally**: a GitHub URL such as \`https://github.com/org/repo/tree/main/mcp\` (the branch and subdirectory come from the URL), or any git URL. It is cloned and built; Node servers are built automatically. Read its README (minimodel can fetch it) for the env vars it needs and pass them as \`env\`.
+  Prefer the deployed URL when a provider offers one — there is nothing to build or keep running. Ask the user for keys and tokens with ask_user rather than inventing them.
 - mcp_list_servers / mcp_list_tools(server) — what is installed and each tool's argument schema.
 - mcp_call(server, tool, arguments) — invoke a tool. Tools marked DESTRUCTIVE change external systems: confirm with the user first.
 - mcp_remove(server) — uninstall.
@@ -213,7 +216,7 @@ heyctl is a kubectl-shaped CLI for app-lb's admin API. Drive it with the \`heyct
   {
     tools: ["mcp_install", "mcp_remove", "mcp_list_servers", "mcp_list_tools", "mcp_call"],
     text: `## MCP servers — extending your tools
-mcp_list_servers / mcp_list_tools(server) show what is installed and each tool's argument schema; mcp_call(server, tool, arguments) invokes one. Tools marked DESTRUCTIVE change external systems: confirm with the user first.`,
+mcp_list_servers / mcp_list_tools(server) show what is installed and each tool's argument schema; mcp_call(server, tool, arguments) invokes one. Tools marked DESTRUCTIVE change external systems: confirm with the user first. If you hold mcp_install: a deployed server is installed from its endpoint URL (the transport is negotiated for you; an API key goes in headers as {"Authorization": "Bearer <key>"}), and one that uses OAuth returns a sign-in URL rather than a tool list — it is not installed until the user opens that link, so give it to them and say so. A server listed as "needs sign-in" needs the same.`,
   },
   {
     tools: ["bash"],

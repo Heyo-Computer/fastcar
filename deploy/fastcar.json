@@ -2,7 +2,7 @@
   "id": "fastcar",
   "routes": [
     {
-      "host": "fastcar.example.com"
+      "host": "REPLACE_ME_ROUTE_HOST"
     }
   ],
   "auth": {
@@ -44,7 +44,7 @@
       "TRANSCRIBE_MODEL": "openai/whisper-large-v3",
       "DATABASE_URL": "postgres://fastcar:REPLACE_ME_DB_PASSWORD@db.example.com:5432/fastcar",
       "PORT": "3000",
-      "FASTCAR_PUBLIC_URL": "https://fastcar.example.com",
+      "FASTCAR_PUBLIC_URL": "https://REPLACE_ME_ROUTE_HOST",
       "FASTCAR_WORKDIR": "/workspace",
       "FASTCAR_DATA_DIR": "/workspace/fastcar",
       "FASTCAR_REPOS_DIR": "/workspace/repos",

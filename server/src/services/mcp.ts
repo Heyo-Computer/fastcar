@@ -4,7 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
+import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { InstallMcpRequest, McpServerStatus, McpToolInfo, McpTransport } from "@fastcar/shared";
 import type { Config } from "../config.js";
@@ -13,10 +18,13 @@ import {
   getMcpServerByName,
   listMcpServers,
   registerMcpServer,
+  updateMcpServerOAuth,
   updateMcpServerTools,
+  updateMcpServerTransport,
   type McpServerRecord,
 } from "../db/mcpServers.js";
-import { decryptMap, encryptMap } from "./secrets.js";
+import { decryptMap, decryptSecret, encryptMap, encryptSecret } from "./secrets.js";
+import { McpOAuthProvider, OAUTH_CALLBACK_PATH, type OAuthState } from "./mcpOAuth.js";
 import { runGit } from "./git.js";
 
 /**
@@ -218,6 +226,51 @@ interface ServerState {
   connecting: Promise<Connection> | null;
   status: McpServerStatus["status"];
   error?: string;
+  /** Present while the server is waiting on an OAuth sign-in. */
+  authorizationUrl?: string;
+  /** False until the row exists — i.e. during a first install's sign-in. */
+  registered: boolean;
+}
+
+/**
+ * The server wants the user to sign in. Carries the URL to send them to and
+ * the OAuth state the callback will come back with.
+ */
+export class McpAuthorizationRequired extends Error {
+  constructor(
+    readonly authorizationUrl: string,
+    readonly oauthState: string,
+  ) {
+    super("this MCP server requires signing in");
+  }
+}
+
+/** An OAuth sign-in that has been started and not yet finished. */
+interface PendingAuth {
+  state: ServerState;
+  provider: McpOAuthProvider;
+  startedAt: number;
+}
+
+/** A sign-in nobody finished is dropped after this long. */
+const PENDING_AUTH_TTL_MS = 30 * 60_000;
+
+/** Unwrap an SDK transport error to its HTTP status, if it has one. */
+function httpStatusOf(err: unknown): number | undefined {
+  let e = err as { cause?: unknown } | undefined;
+  for (let i = 0; e && i < 4; i++) {
+    if ((e instanceof StreamableHTTPError || e instanceof SseError) && typeof e.code === "number") {
+      return e.code;
+    }
+    e = e.cause as typeof e;
+  }
+  return undefined;
+}
+
+function isUnauthorized(err: unknown): boolean {
+  if (err instanceof UnauthorizedError) return true;
+  const status = httpStatusOf(err);
+  return status === 401 || status === 403;
 }
 
 function toToolInfo(t: {
@@ -271,6 +324,18 @@ export function renderToolResult(result: { content?: unknown; structuredContent?
   return parts.join("\n") || "(empty result)";
 }
 
+/**
+ * Which transport a bare install source implies. An http(s) URL that is not a
+ * git host is a deployed server; everything else is cloned and run locally.
+ * `http` here means "remote — negotiate": openRemote falls back to SSE.
+ */
+export function guessTransport(source: string): McpTransport {
+  if (!/^https?:\/\//.test(source)) return "stdio";
+  if (/\.git\/?$/.test(source)) return "stdio";
+  if (/^https?:\/\/(www\.)?(github\.com|gitlab\.com|bitbucket\.org)\//.test(source)) return "stdio";
+  return /\/sse\/?$/.test(new URL(source).pathname) ? "sse" : "http";
+}
+
 export class McpManager {
   private readonly servers = new Map<string, ServerState>();
   private loaded: Promise<void> | null = null;
@@ -291,16 +356,38 @@ export class McpManager {
     if (!this.loaded) {
       this.loaded = (async () => {
         for (const record of await listMcpServers()) {
-          this.servers.set(record.name, { record, conn: null, connecting: null, status: "stopped" });
+          this.servers.set(record.name, {
+            record,
+            conn: null,
+            connecting: null,
+            status: "stopped",
+            registered: true,
+          });
         }
       })();
     }
     return this.loaded;
   }
 
+  /**
+   * Stop every server, including ones still connecting.
+   *
+   * start() connects in the background, so a shutdown that only closed
+   * `state.conn` missed any connection still in flight: it landed afterwards
+   * and was never closed — a spawned stdio process left running, or an SSE
+   * EventSource that auto-reconnects forever once its server goes away. That
+   * is exactly the window a rollout's SIGTERM tends to hit. So refuse new
+   * connections, let the in-flight ones settle, then close everything.
+   */
   async shutdown(): Promise<void> {
+    this.stopped = true;
+    await Promise.allSettled(
+      [...this.servers.values()].map((s) => s.connecting).filter((p): p is Promise<Connection> => Boolean(p)),
+    );
     for (const state of this.servers.values()) await this.disconnect(state);
   }
+
+  private stopped = false;
 
   // ---------------------------------------------------------------- queries
 
@@ -322,11 +409,22 @@ export class McpManager {
       command: r.command ?? undefined,
       args: r.args,
       envKeys: Object.keys(this.envOf(r)),
+      headerKeys: Object.keys(this.headersOf(r)),
+      auth: this.authOf(r),
       status: s.status,
       error: s.error,
+      ...(s.status === "needs_auth" && s.authorizationUrl
+        ? { authorizationUrl: s.authorizationUrl }
+        : {}),
       tools: s.conn?.tools ?? r.tools,
       createdAt: r.createdAt,
     };
+  }
+
+  private authOf(r: McpServerRecord): McpServerStatus["auth"] {
+    if (r.transport === "stdio") return "none";
+    if (r.oauthEnc) return "oauth";
+    return Object.keys(this.headersOf(r)).length ? "headers" : "none";
   }
 
   private envOf(r: McpServerRecord): Record<string, string> {
@@ -420,6 +518,7 @@ export class McpManager {
   // ---------------------------------------------------------------- connections
 
   private connect(state: ServerState): Promise<Connection> {
+    if (this.stopped) return Promise.reject(new Error("the MCP manager is shutting down"));
     if (state.conn) return Promise.resolve(state.conn);
     if (state.connecting) return state.connecting;
     state.connecting = this.openConnection(state)
@@ -427,12 +526,20 @@ export class McpManager {
         state.conn = conn;
         state.status = "connected";
         state.error = undefined;
+        state.authorizationUrl = undefined;
         mcpEvents.emit("changed");
         return conn;
       })
       .catch((err) => {
-        state.status = "error";
-        state.error = err instanceof Error ? err.message : String(err);
+        if (err instanceof McpAuthorizationRequired) {
+          // Not a failure: the server is fine, it wants a person to sign in.
+          state.status = "needs_auth";
+          state.authorizationUrl = err.authorizationUrl;
+          state.error = undefined;
+        } else {
+          state.status = "error";
+          state.error = err instanceof Error ? err.message : String(err);
+        }
         mcpEvents.emit("changed");
         throw err;
       })
@@ -444,15 +551,11 @@ export class McpManager {
 
   private async openConnection(state: ServerState): Promise<Connection> {
     const r = state.record;
+    if (r.transport !== "stdio") return this.openRemote(state);
+
     const stderrTail: string[] = [];
     let transport: Transport;
-    if (r.transport === "http") {
-      if (!r.url) throw new Error(`MCP server "${r.name}" has no url`);
-      const headers = this.headersOf(r);
-      transport = new StreamableHTTPClientTransport(new URL(r.url), {
-        requestInit: Object.keys(headers).length ? { headers } : undefined,
-      });
-    } else {
+    {
       if (!r.command) throw new Error(`MCP server "${r.name}" has no launch command`);
       if (r.path && !fs.existsSync(r.path)) {
         throw new Error(`MCP server "${r.name}" is registered but missing on disk at ${r.path}`);
@@ -506,6 +609,278 @@ export class McpManager {
     return conn;
   }
 
+  // ---------------------------------------------------------------- remote servers
+
+  /** Where the authorization server sends the browser back to. */
+  private get callbackUrl(): string {
+    return `${this.cfg.publicUrl}${OAUTH_CALLBACK_PATH}`;
+  }
+
+  /**
+   * An OAuth provider for this server, backed by its encrypted blob. For a
+   * server still mid-install the blob lives only on the in-memory record, so
+   * an abandoned sign-in leaves no row behind.
+   */
+  private oauthProviderFor(state: ServerState): McpOAuthProvider {
+    const r = state.record;
+    let data: OAuthState = {};
+    if (r.oauthEnc) {
+      try {
+        data = JSON.parse(decryptSecret(r.oauthEnc, this.cfg)) as OAuthState;
+      } catch {
+        data = {};
+      }
+    }
+    return new McpOAuthProvider(data, this.callbackUrl, async (next) => {
+      r.oauthEnc = encryptSecret(JSON.stringify(next), this.cfg);
+      if (state.registered) await updateMcpServerOAuth(r.name, r.oauthEnc).catch(() => {});
+    });
+  }
+
+  /**
+   * The transports to try, in order. A URL ending in /sse is the legacy
+   * transport by convention; otherwise try Streamable HTTP and, per the MCP
+   * spec's backwards-compatibility rule, fall back to HTTP+SSE if the server
+   * rejects it with a 4xx. Many SSE deployments serve the stream at a sibling
+   * /sse path rather than the URL given, so that is tried too.
+   */
+  private remoteCandidates(r: McpServerRecord): Array<{ transport: "http" | "sse"; url: URL }> {
+    const url = new URL(r.url!);
+    if (r.transport === "sse" || /\/sse\/?$/.test(url.pathname)) return [{ transport: "sse", url }];
+    const out: Array<{ transport: "http" | "sse"; url: URL }> = [
+      { transport: "http", url },
+      { transport: "sse", url },
+    ];
+    if (/\/mcp\/?$/.test(url.pathname)) {
+      const sibling = new URL(url);
+      sibling.pathname = url.pathname.replace(/\/mcp\/?$/, "/sse");
+      out.push({ transport: "sse", url: sibling });
+    }
+    return out;
+  }
+
+  private makeRemoteTransport(
+    kind: "http" | "sse",
+    url: URL,
+    headers: Record<string, string>,
+    provider: McpOAuthProvider,
+    watchedFetch: typeof fetch,
+  ): Transport {
+    const requestInit = Object.keys(headers).length ? { headers } : undefined;
+    // A static Authorization header and OAuth are alternatives: when the user
+    // supplied one, do not let a 401 from a bad token start a sign-in flow.
+    const authProvider = headers.Authorization || headers.authorization ? undefined : provider;
+    if (kind === "http") {
+      return new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch: watchedFetch });
+    }
+    return new SSEClientTransport(url, {
+      requestInit,
+      authProvider,
+      fetch: watchedFetch,
+      // The EventSource leg has its own fetch. Without merging the headers in
+      // here, a bearer token reaches the POSTs but not the stream and the
+      // server 401s it.
+      eventSourceInit: {
+        fetch: (u, init) =>
+          watchedFetch(u, { ...init, headers: { ...(init?.headers as object), ...headers } }),
+      },
+    });
+  }
+
+  /**
+   * A fetch that notes whether the MCP endpoint itself answered 401/403.
+   *
+   * When OAuth discovery fails, the SDK walks the whole chain — protected
+   * resource metadata, authorization server metadata, then a guessed
+   * /register at the server root — and surfaces whatever the *last* request
+   * produced: typically a ServerError with an empty message and no status.
+   * The error shape cannot tell us the server wanted credentials; the wire can.
+   * Discovery and token requests are excluded, since their 401s say nothing
+   * about whether the endpoint needs auth.
+   */
+  private watchingFetch(): { fetch: typeof fetch; sawUnauthorized: () => boolean } {
+    let unauthorized = false;
+    const oauthPath = /\/\.well-known\/|\/(register|token|authorize)\/?$/;
+    return {
+      fetch: async (input, init) => {
+        const res = await fetch(input, init);
+        if (res.status === 401 || res.status === 403) {
+          const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          if (!oauthPath.test(new URL(href).pathname)) unauthorized = true;
+        }
+        return res;
+      },
+      sawUnauthorized: () => unauthorized,
+    };
+  }
+
+  private async openRemote(state: ServerState): Promise<Connection> {
+    const r = state.record;
+    if (!r.url) throw new Error(`MCP server "${r.name}" has no url`);
+    const headers = this.headersOf(r);
+    const provider = this.oauthProviderFor(state);
+    const tried: string[] = [];
+
+    for (const candidate of this.remoteCandidates(r)) {
+      const watch = this.watchingFetch();
+      const transport = this.makeRemoteTransport(
+        candidate.transport,
+        candidate.url,
+        headers,
+        provider,
+        watch.fetch,
+      );
+      const client = new Client({ name: "fastcar", version: "0.1.0" }, { capabilities: {} });
+      const conn: Connection = { client, transport, tools: [], stderrTail: [] };
+      transport.onclose = () => {
+        if (state.conn === conn) {
+          state.conn = null;
+          state.status = "stopped";
+          mcpEvents.emit("changed");
+        }
+      };
+      transport.onerror = (err) => {
+        conn.stderrTail.push(`transport error: ${err.message}`);
+        if (conn.stderrTail.length > STDERR_TAIL_LINES) conn.stderrTail.shift();
+      };
+
+      try {
+        await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
+        const listed = await client.listTools(undefined, { timeout: CONNECT_TIMEOUT_MS });
+        conn.tools = listed.tools.map(toToolInfo);
+      } catch (err) {
+        await transport.close().catch(() => {});
+
+        // The server wants a sign-in: surface the URL rather than an error.
+        if (provider.pendingAuthorizationUrl) {
+          const pending = new McpAuthorizationRequired(
+            provider.pendingAuthorizationUrl.toString(),
+            provider.oauthState,
+          );
+          this.pendingAuth.set(provider.oauthState, { state, provider, startedAt: Date.now() });
+          // Remember which transport got as far as asking, so the retry after
+          // sign-in does not renegotiate from scratch.
+          r.transport = candidate.transport;
+          r.url = candidate.url.toString();
+          throw pending;
+        }
+        if (watch.sawUnauthorized() || isUnauthorized(err)) {
+          throw new Error(this.authErrorMessage(r, headers, err));
+        }
+
+        const status = httpStatusOf(err);
+        tried.push(`${candidate.transport} ${candidate.url.pathname} → ${status ?? (err as Error).message}`);
+        // Only a 4xx means "wrong transport or path, try the next". A 5xx, a
+        // timeout or a refused connection would fail the same way on every
+        // candidate, so report it now instead of three times.
+        if (status !== undefined && status >= 400 && status < 500) continue;
+        throw new Error(
+          `could not connect to MCP server "${r.name}" at ${candidate.url}: ${(err as Error).message}`,
+        );
+      }
+
+      // Connected. Record what worked so reconnects skip the negotiation.
+      if (candidate.transport !== r.transport || candidate.url.toString() !== r.url) {
+        r.transport = candidate.transport;
+        r.url = candidate.url.toString();
+        if (state.registered) {
+          await updateMcpServerTransport(r.name, r.transport).catch(() => {});
+        }
+      }
+      if (JSON.stringify(conn.tools) !== JSON.stringify(r.tools)) {
+        r.tools = conn.tools;
+        if (state.registered) await updateMcpServerTools(r.name, conn.tools).catch(() => {});
+      }
+      return conn;
+    }
+
+    throw new Error(
+      `could not connect to MCP server "${r.name}": it is not answering as an MCP server over ` +
+        `Streamable HTTP or HTTP+SSE. Tried: ${tried.join("; ")}. Check the URL — ` +
+        `deployed servers usually live at a path like /mcp or /sse.`,
+    );
+  }
+
+  /**
+   * A 401 from a server that did not advertise OAuth, or rejected a token.
+   * The SDK's own message here is a raw response body; say what to do instead.
+   */
+  private authErrorMessage(r: McpServerRecord, headers: Record<string, string>, err: unknown): string {
+    const raw = err instanceof Error ? err.message.split("\n")[0] : String(err);
+    const detail = raw?.trim() || "the server answered 401 Unauthorized";
+    if (headers.Authorization || headers.authorization) {
+      return `MCP server "${r.name}" rejected the Authorization header (${detail}). The token may be wrong, expired, or lack the required scope.`;
+    }
+    return (
+      `MCP server "${r.name}" requires authentication and does not advertise OAuth sign-in. ` +
+      `Reinstall it with an Authorization header — e.g. headers: {"Authorization": "Bearer <token>"} — ` +
+      `using the API key or token from the provider's documentation. (${detail})`
+    );
+  }
+
+  // ---------------------------------------------------------------- OAuth sign-in
+
+  private readonly pendingAuth = new Map<string, PendingAuth>();
+
+  private prunePendingAuth(): void {
+    const cutoff = Date.now() - PENDING_AUTH_TTL_MS;
+    for (const [key, p] of this.pendingAuth) if (p.startedAt < cutoff) this.pendingAuth.delete(key);
+  }
+
+  /**
+   * Finish a sign-in: exchange the authorization code for tokens, connect, and
+   * — for a first install — register the server now that it has answered
+   * tools/list. Called from the OAuth callback route.
+   */
+  async completeAuthorization(oauthState: string, code: string): Promise<McpServerStatus> {
+    this.prunePendingAuth();
+    const pending = this.pendingAuth.get(oauthState);
+    if (!pending) {
+      throw new Error("This sign-in link has expired or was already used. Start the connection again.");
+    }
+    this.pendingAuth.delete(oauthState);
+    const { state, provider } = pending;
+    const r = state.record;
+
+    const result = await auth(provider, { serverUrl: r.url!, authorizationCode: code });
+    if (result !== "AUTHORIZED") throw new Error("the authorization server did not issue tokens");
+
+    state.conn = null;
+    state.status = "stopped";
+    const conn = await this.connect(state);
+
+    if (!state.registered) {
+      if (this.servers.has(r.name)) {
+        throw new Error(`An MCP server named "${r.name}" was installed while this sign-in was open.`);
+      }
+      r.tools = conn.tools;
+      state.record = await registerMcpServer(r);
+      state.registered = true;
+      this.servers.set(r.name, state);
+      mcpEvents.emit("changed");
+    }
+    return this.status(state);
+  }
+
+  /**
+   * Start (or restart) a sign-in for an installed server — its refresh token
+   * was revoked, say. Returns the URL to send the user to.
+   */
+  async startAuthorization(name: string): Promise<McpServerStatus> {
+    const state = await this.require(name);
+    if (state.record.transport === "stdio") throw new Error(`"${name}" is a local server; it has no sign-in`);
+    // Drop any tokens so the SDK goes to the authorization server rather than
+    // retrying the credential that just failed.
+    await this.oauthProviderFor(state).invalidateCredentials("tokens");
+    await this.disconnect(state);
+    try {
+      await this.connect(state);
+    } catch (err) {
+      if (!(err instanceof McpAuthorizationRequired)) throw err;
+    }
+    return this.status(state);
+  }
+
   private async disconnect(state: ServerState): Promise<void> {
     const conn = state.conn;
     state.conn = null;
@@ -527,16 +902,16 @@ export class McpManager {
     const log = opts.log ?? (() => {});
     const source = req.source.trim();
     if (!source) throw new Error("source is required");
-    const transport: McpTransport =
-      req.transport ?? (/^https?:\/\//.test(source) && !/github\.com/.test(source) && !/\.git$/.test(source) ? "http" : "stdio");
+    const transport: McpTransport = req.transport ?? guessTransport(source);
+    const remote = transport !== "stdio";
 
-    const name = validName(req.name?.trim() || (transport === "http" ? new URL(source).hostname : deriveMcpName(source, req.subpath)));
+    const name = validName(req.name?.trim() || (remote ? new URL(source).hostname : deriveMcpName(source, req.subpath)));
     if (this.servers.has(name)) {
       throw new Error(`An MCP server named "${name}" is already installed. Remove it first or pick another name.`);
     }
 
     let record: McpServerRecord;
-    if (transport === "http") {
+    if (remote) {
       const url = new URL(source).toString();
       record = {
         id: "",
@@ -549,6 +924,7 @@ export class McpManager {
         args: [],
         envEnc: "",
         headersEnc: encryptMap(req.headers ?? {}, this.cfg),
+        oauthEnc: "",
         tools: [],
         createdAt: new Date().toISOString(),
       };
@@ -580,6 +956,7 @@ export class McpManager {
           args: launch.args,
           envEnc: encryptMap(req.env ?? {}, this.cfg),
           headersEnc: "",
+          oauthEnc: "",
           tools: [],
           createdAt: new Date().toISOString(),
         };
@@ -590,16 +967,29 @@ export class McpManager {
     }
 
     // Connect before registering: a server that cannot answer tools/list is not installed.
-    const state: ServerState = { record, conn: null, connecting: null, status: "stopped" };
+    const state: ServerState = {
+      record,
+      conn: null,
+      connecting: null,
+      status: "stopped",
+      registered: false,
+    };
     try {
-      log("connecting");
+      log(remote ? `connecting to ${record.url}` : "connecting");
       await this.connect(state);
     } catch (err) {
+      if (err instanceof McpAuthorizationRequired) {
+        // Still not registered: the row is written by completeAuthorization
+        // once the signed-in server answers tools/list. Hand back the URL.
+        log("sign-in required");
+        return this.status(state);
+      }
       if (record.transport === "stdio") fs.rmSync(path.join(this.cfg.mcpDir, name), { recursive: true, force: true });
       throw err;
     }
     record.tools = state.conn?.tools ?? [];
-    state.record = await registerMcpServer(record);
+    state.record = await registerMcpServer(state.record);
+    state.registered = true;
     this.servers.set(name, state);
     mcpEvents.emit("changed");
     return this.status(state);

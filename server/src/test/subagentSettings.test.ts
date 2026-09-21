@@ -51,6 +51,7 @@ function tempConfig(dataDir: string, overrides: Partial<Config> = {}): Config {
     adminToken: undefined,
     defaultOwner: null,
     publicUrl: "http://public.test",
+    publicUrlFromEnv: true,
     ...overrides,
   };
 }

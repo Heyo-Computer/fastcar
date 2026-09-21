@@ -43,7 +43,7 @@ export function createArtifactTools(artifacts: ArtifactService, threadId: string
         content: [
           {
             type: "text",
-            text: `Created artifact ${artifact.id} (${artifact.name}, ${contentType}, ${artifact.size} bytes)\nPublic URL: ${url}`,
+            text: `Created artifact ${artifact.id} (${artifact.name}, ${contentType}, ${artifact.size} bytes)\nPublic URL: ${url}${artifacts.localOnlyNote()}`,
           },
         ],
         details: { id: artifact.id, name: artifact.name, contentType, url },
@@ -67,7 +67,7 @@ export function createArtifactTools(artifacts: ArtifactService, threadId: string
       }
       const url = artifacts.publicUrl(artifact);
       return {
-        content: [{ type: "text", text: `Updated artifact ${artifact.id} (${artifact.size} bytes)\nPublic URL: ${url}` }],
+        content: [{ type: "text", text: `Updated artifact ${artifact.id} (${artifact.size} bytes)\nPublic URL: ${url}${artifacts.localOnlyNote()}` }],
         details: { updated: true, id: artifact.id, url: url as string | null },
       };
     },
@@ -86,7 +86,7 @@ export function createArtifactTools(artifacts: ArtifactService, threadId: string
               (a) =>
                 `- [${a.id}] ${a.name} (${a.contentType}, ${a.size} bytes${a.parentArtifactId ? `, parent ${a.parentArtifactId}` : ""}) ${artifacts.publicUrl(a)}`,
             )
-            .join("\n")
+            .join("\n") + artifacts.localOnlyNote()
         : "No artifacts on this thread yet.";
       return { content: [{ type: "text", text }], details: { count: items.length } };
     },

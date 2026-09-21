@@ -37,6 +37,7 @@ import { searchMentions } from "../services/mentions.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { COMMAND_SPECS } from "../threads/commands.js";
 import { listTools } from "../tools/registry.js";
+import { OAUTH_CALLBACK_PATH } from "../services/mcpOAuth.js";
 import type { ThreadManager } from "../threads/manager.js";
 import { callerFromRequest } from "./auth.js";
 import { loadPromptTemplates } from "../services/promptTemplates.js";
@@ -115,6 +116,66 @@ export function registerRoutes(
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  /**
+   * Re-run the OAuth sign-in for an installed remote server — its refresh
+   * token was revoked, or it was never finished. Returns the status, which
+   * carries `authorizationUrl` while a sign-in is pending.
+   */
+  app.post<{ Params: { name: string } }>("/api/mcp/:name/authorize", async (req, reply) => {
+    if (!deps.mcp) return reply.code(503).send({ error: "MCP is not enabled" });
+    if (!callerFromRequest(cfg, req).isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      return { server: await deps.mcp.startAuthorization(req.params.name) };
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /**
+   * Where the authorization server sends the browser back after sign-in.
+   *
+   * Deliberately NOT admin-gated: this is a top-level browser navigation, so
+   * it cannot carry the `Authorization: Bearer` header callerFromRequest
+   * looks for, and gating it would make OAuth unusable whenever
+   * FASTCAR_ADMIN_TOKEN is set. The capability is the OAuth `state` — 24
+   * random bytes, single use, expiring after 30 minutes, known only to
+   * whoever started the flow — the same shape as the /pt/ trigger tokens.
+   * It still sits behind app-lb's sign-in gate in deployment (it is not in
+   * auth.public_paths), and the browser arriving here is the signed-in user's.
+   */
+  app.get<{ Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
+    OAUTH_CALLBACK_PATH,
+    async (req, reply) => {
+      const page = (title: string, body: string, ok: boolean) =>
+        reply
+          .type("text/html; charset=utf-8")
+          .code(ok ? 200 : 400)
+          .send(oauthResultPage(title, body, ok));
+      if (!deps.mcp) return page("MCP is not enabled", "This server is running without MCP support.", false);
+      const { code, state, error, error_description } = req.query;
+      if (error) {
+        return page(
+          "Sign-in cancelled",
+          `The provider returned <code>${escapeHtml(error)}</code>${
+            error_description ? `: ${escapeHtml(error_description)}` : ""
+          }. Nothing was connected.`,
+          false,
+        );
+      }
+      if (!code || !state) return page("Missing parameters", "The sign-in response had no code or state.", false);
+      try {
+        const status = await deps.mcp.completeAuthorization(state, code);
+        return page(
+          `Connected to ${escapeHtml(status.name)}`,
+          `fastcar can now use ${status.tools.length} tool${status.tools.length === 1 ? "" : "s"} from this server. You can close this tab.`,
+          true,
+        );
+      } catch (err) {
+        return page("Could not connect", escapeHtml(err instanceof Error ? err.message : String(err)), false);
+      }
+    },
+  );
 
   app.delete<{ Params: { name: string } }>("/api/mcp/:name", async (req, reply) => {
     if (!deps.mcp) return reply.code(503).send({ error: "MCP is not enabled" });
@@ -557,4 +618,28 @@ export function registerRoutes(
     }
     return deps.email.saveSettings(body);
   });
+}
+
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/**
+ * The page a user lands on after signing in to an MCP server's provider. It
+ * is outside the React app (a plain browser navigation), so it styles itself
+ * with the app's own palette and tells the user they can close the tab.
+ */
+function oauthResultPage(title: string, body: string, ok: boolean): string {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} · fastcar</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1117;color:#d7e1ea;
+       font:15px/1.5 Inter,system-ui,sans-serif;padding:16px}
+  main{max-width:28rem;border:1px solid #1f2b38;background:#10171f;border-radius:14px;padding:28px}
+  h1{margin:0 0 8px;font-size:18px;font-weight:600;color:${ok ? "#2dd4bf" : "#f87171"}}
+  p{margin:0;color:#8296a8} code{color:#d7e1ea}
+</style></head>
+<body><main><h1>${ok ? "✓ " : ""}${title}</h1><p>${body}</p></main></body></html>`;
 }

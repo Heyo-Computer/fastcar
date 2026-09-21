@@ -156,13 +156,13 @@ recurses forever.
 | `FASTCAR_WORKDIR` | Directory the agents operate on | process cwd |
 | `FASTCAR_REPOS_DIR` | Where cloned repositories live | `<workdir>/repos` |
 | `FASTCAR_MCP_DIR` | Where installed MCP servers are cloned and built | `<data dir>/mcp` |
-| `FASTCAR_SECRET` | Key for secrets stored at rest (SMTP password, MCP env/headers) | derived from the data dir path |
+| `FASTCAR_SECRET` | Key for secrets stored at rest (SMTP password, MCP env, headers and OAuth tokens) | derived from the data dir path |
 | `FASTCAR_GIT_NAME` / `FASTCAR_GIT_EMAIL` | Commit identity if the VM has no global git config | unset |
 | `FASTCAR_DATA_DIR` | App state (Pi auth/models/sessions) — keep outside the workdir | `./.fastcar` |
 | `FASTCAR_MOCK` | `1` = keyless mock mode | `0` |
 | `FASTCAR_ENV_FILE` | Explicit env file to load instead of `.env` | unset |
 | `PORT` | HTTP port | `3000` |
-| `FASTCAR_PUBLIC_URL` | Externally reachable origin; prefix of the public artifact URLs the agent hands out | `http://localhost:$PORT` |
+| `FASTCAR_PUBLIC_URL` | Externally reachable origin: the prefix of the public artifact URLs agents hand out, and of the OAuth redirect URI registered with remote MCP servers — so it must be the address your browser actually uses | `http://localhost:$PORT` |
 
 ## Using it
 
@@ -260,19 +260,46 @@ recurses forever.
   auth uses whatever the VM has (ssh keys, credential helper, or a token
   embedded in an https URL — prompts are disabled so bad auth fails fast instead
   of hanging).
-- **MCP servers**: the agent can install a [Model Context Protocol](https://modelcontextprotocol.io)
-  server from a GitHub URL — e.g. `https://github.com/Heyo-Computer/heyo-public/tree/main/mcp`
-  (branch and subdirectory are read from the URL), any git URL, or a remote
-  http endpoint — and call its tools. Tools: `mcp_install` (clone, `npm install`,
-  `npm run build`, entry point from `package.json`; pass `command`/`args` for
-  non-Node servers and `env` for the configuration its README asks for),
-  `mcp_list_servers`, `mcp_list_tools` (argument schemas), `mcp_call`,
-  `mcp_remove`. Servers run over stdio on demand, restart if they die, and are
-  registered in Postgres so they survive restarts; env vars and headers are
-  encrypted at rest (`FASTCAR_SECRET`). The sidebar's MCP panel and `/mcp` show
-  what is installed (`GET/POST /api/mcp`, `DELETE /api/mcp/:name`). maxcoding
-  can call installed tools inside its tasks; in plan mode only tools the server
-  marks `readOnlyHint` may run. Installs live in `FASTCAR_MCP_DIR`.
+- **MCP servers** extend what agents can do. There are two ways to add one,
+  from Settings → MCP or by asking an agent to (`mcp_install`):
+
+  - **A deployed server** — paste its endpoint URL (e.g.
+    `https://mcp.example.com/mcp`). Nothing is cloned or run locally. fastcar
+    negotiates the transport the way the MCP spec describes: it tries
+    Streamable HTTP, and if the server rejects that with a 4xx it falls back
+    to the older HTTP+SSE transport — trying the URL you gave and then the
+    conventional sibling `/sse` path — and remembers what worked so it does
+    not renegotiate on every reconnect. Authentication:
+    - **API key**: put it in the headers box (`Authorization: Bearer sk-…`,
+      or just paste the token). It is sent on every request, including the
+      SSE stream.
+    - **OAuth**: leave the headers empty. A server that follows the MCP
+      authorization spec answers 401 and points at its authorization server;
+      fastcar discovers it, registers itself as a client, and gives you a
+      **Sign in** link. The install isn't finished, and nothing is registered,
+      until you complete the sign-in and the server answers `tools/list`. The
+      provider redirects back to `/api/mcp/oauth/callback`, which is behind
+      the normal sign-in gate (it is *not* in `auth.public_paths`) and is
+      protected by the single-use OAuth `state`. Tokens refresh automatically.
+      If the provider revokes them, the server shows **needs sign-in** and ↻
+      starts a new one. An agent that installs an OAuth server gets the link in
+      the tool result and passes it to you, since it can't open a browser.
+    - A 401 from a server that offers no OAuth says so plainly and asks for a
+      key, rather than surfacing the raw response.
+  - **Code to run locally** — a GitHub URL such as
+    `https://github.com/Heyo-Computer/heyo-public/tree/main/mcp` (branch and
+    subdirectory are read from the URL) or any git URL. It is cloned into
+    `FASTCAR_MCP_DIR` and built (`npm install`, `npm run build`, entry point
+    from `package.json`); pass `command`/`args` for non-Node servers and `env`
+    for the configuration its README asks for. Servers run over stdio on
+    demand and restart if they die.
+
+  Env vars, headers and OAuth tokens are all encrypted at rest
+  (`FASTCAR_SECRET`). Agents call tools through `mcp_list_tools` (argument
+  schemas) and `mcp_call`. Each agent can be limited to a subset of servers,
+  enforced when a call is made as well as in its prompt. In plan mode, only
+  tools the server marks `readOnlyHint` may run. `GET/POST /api/mcp`,
+  `POST /api/mcp/:name/authorize`, `DELETE /api/mcp/:name`.
 - **Purging old repos**: hover a repo for `×` (confirm, then delete), or use
   `/purge` — with no argument it lists repositories oldest-commit-first so stale
   clones are easy to spot, and `/purge <name>` removes one. A purge deletes the
