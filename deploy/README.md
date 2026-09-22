@@ -188,6 +188,17 @@ back to grep.
 serverctl exec fastcar -- sh -c 'cd /workspace/repos/<name> && codegraph --text search <symbol>'
 ```
 
+Signal inside the VM: the image does not ship signal-cli, because the native
+binary is ~370 MB and every rootfs byte is paid on each cold boot (see the
+Dockerfile). Put it on the data disk instead, where it persists, and point the
+deployment at it with `vm.env_vars`: `SIGNAL_CLI_PATH=/workspace/bin/signal-cli`
+and `SIGNAL_ACCOUNT=+1…`. The account's keys default to
+`/workspace/fastcar/signal`. Link it from a shell in the guest (`serverctl
+shell fastcar`, then `signal-cli --data-dir /workspace/fastcar/signal link -n
+fastcar`) before setting `SIGNAL_ACCOUNT`. With `vm.workspace`, those keys
+travel in the workspace snapshot and the store. Run a single replica: two VMs
+using the same linked device at once corrupt its Signal sessions.
+
 Git auth inside the VM: the agent's `git_clone`/`git_push` use whatever
 credentials exist in the guest — embed a token in the https URL when adding a
 repo, or `serverctl shell` in once and install an ssh key / credential helper

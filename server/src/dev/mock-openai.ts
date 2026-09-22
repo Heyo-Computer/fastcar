@@ -19,6 +19,8 @@ import { getAgent } from "../pi/agentsConfig.js";
  *    "## Questions for the user" section
  *  - "install the mcp server <source>" -> mcp_install(source) (if offered)
  *  - "call the mcp echo tool"          -> mcp_call(mcp-echo, echo) (if offered)
+ *  - "send a signal message to <thread>: <text>" -> signal_send, then
+ *    signal_read(wait_seconds) on the same thread for the reply (if offered)
  * Also implements POST .../audio/transcriptions with a canned transcript.
  */
 
@@ -126,9 +128,22 @@ function decideReply(req: ChatRequest): Reply {
     };
   }
 
+  // Signal: after sending, wait on the same thread for the answer — the
+  // conversation loop the two tools exist for.
+  if (lastMessage?.role === "tool" && toolNames.has("signal_read")) {
+    const sent = lastToolCall(req.messages, "signal_send");
+    if (sent) return { kind: "tool", name: "signal_read", args: { thread: sent.thread, wait_seconds: 10 } };
+  }
+
   // After any tool result, wrap up with text (keeps the loop short and predictable).
   if (lastMessage?.role === "tool") {
     return { kind: "text", text: "Mock run complete. I inspected the workspace and finished the task." };
+  }
+  // Raw text: Signal group ids and uuids are case-sensitive. Checked before
+  // "ask", which a message body could easily contain.
+  const signalMatch = /[Ss]end a signal message to (\S+?): (.+)/.exec(rawUserText);
+  if (signalMatch && toolNames.has("signal_send")) {
+    return { kind: "tool", name: "signal_send", args: { thread: signalMatch[1], message: signalMatch[2] } };
   }
   if (userText.includes("ask") && toolNames.has("ask_user")) {
     return {
@@ -195,6 +210,18 @@ function decideReply(req: ChatRequest): Reply {
     return { kind: "tool", name: "ls", args: { path: "." } };
   }
   return { kind: "text", text: `Mock response to: ${userText || "(empty prompt)"}` };
+}
+
+/** Arguments of the newest assistant tool call, if it was a call to `name`. */
+function lastToolCall(messages: ChatMessage[], name: string): Record<string, unknown> | null {
+  const assistant = [...messages].reverse().find((m) => m.role === "assistant" && m.tool_calls?.length);
+  const call = assistant?.tool_calls?.at(-1) as { function?: { name?: string; arguments?: string } } | undefined;
+  if (call?.function?.name !== name) return null;
+  try {
+    return JSON.parse(call.function.arguments ?? "{}") as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function sseChunk(res: http.ServerResponse, payload: unknown): void {

@@ -44,6 +44,7 @@ import { loadPromptTemplates } from "../services/promptTemplates.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
+import type { SignalService } from "../services/signal.js";
 import type { AppSettings } from "../services/appSettings.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
 import { AgentValidationError, type AgentService } from "../services/agents.js";
@@ -68,6 +69,8 @@ export interface RouteDeps {
   models?: FastcarModels;
   /** Cron scheduler. Optional so narrow unit tests can omit it. */
   scheduler?: Scheduler;
+  /** Present only when SIGNAL_ACCOUNT is set. */
+  signal?: SignalService;
 }
 
 export function registerRoutes(
@@ -409,6 +412,7 @@ export function registerRoutes(
       email: Boolean(deps.email),
       artifacts: Boolean(deps.artifacts),
       mcp: Boolean(deps.mcp),
+      signal: Boolean(deps.signal),
     }),
   }));
 

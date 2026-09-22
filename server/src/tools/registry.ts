@@ -19,6 +19,7 @@ import type { SubagentManager } from "../pi/subagents.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
+import type { SignalService } from "../services/signal.js";
 import { createArtifactTools } from "./artifacts.js";
 import { createAskUserTool, type AskUserBridge } from "./askUser.js";
 import { createBrowserCheckTool } from "./browserCheck.js";
@@ -28,6 +29,7 @@ import { createHeyctlTools } from "./heyctl.js";
 import { createMcpTools } from "./mcp.js";
 import { createMemoryTools } from "./memory.js";
 import { createRunSubagentTool, type SubagentEventSink } from "./runSubagent.js";
+import { createSignalTools } from "./signal.js";
 import { createSubmitPlanTool, type SubmitPlanBridge } from "./submitPlan.js";
 import { createWebSearchTool } from "./webSearch.js";
 
@@ -42,10 +44,11 @@ export type ToolCategory =
   | "ops"
   | "artifacts"
   | "mcp"
-  | "email";
+  | "email"
+  | "signal";
 
 /** Which optional dependency a tool's factory needs from the ToolContext. */
-export type ToolDep = "subagents" | "ask" | "plan" | "email" | "artifacts" | "mcp";
+export type ToolDep = "subagents" | "ask" | "plan" | "email" | "artifacts" | "mcp" | "signal";
 
 export interface ToolDef {
   name: string;
@@ -89,7 +92,8 @@ type ToolGroup =
   | "git"
   | "heyctl"
   | "artifacts"
-  | "mcp";
+  | "mcp"
+  | "signal";
 
 /** Everything a group factory might need. Optional fields mirror ConductorDeps. */
 export interface ToolContext {
@@ -104,6 +108,7 @@ export interface ToolContext {
   mcp?: McpManager;
   /** MCP servers this agent may reach; undefined means all installed. */
   allowedMcpServers?: string[];
+  signal?: SignalService;
 }
 
 const GROUP_FACTORIES: Record<ToolGroup, (ctx: ToolContext) => ToolDefinition[]> = {
@@ -118,6 +123,7 @@ const GROUP_FACTORIES: Record<ToolGroup, (ctx: ToolContext) => ToolDefinition[]>
   heyctl: () => createHeyctlTools(),
   artifacts: (c) => createArtifactTools(c.artifacts!, c.threadId),
   mcp: (c) => createMcpTools(c.mcp!, c.allowedMcpServers),
+  signal: (c) => createSignalTools(c.signal!, c.cfg.workdir),
 };
 
 /** True when the context carries what this tool's factory needs. */
@@ -137,6 +143,8 @@ function depSatisfied(def: ToolDef, ctx: ToolContext): boolean {
       return Boolean(ctx.artifacts);
     case "mcp":
       return Boolean(ctx.mcp);
+    case "signal":
+      return Boolean(ctx.signal);
   }
 }
 
@@ -231,6 +239,13 @@ export const TOOLS: readonly ToolDef[] = [
     group: "email",
   },
 
+  // ---- Signal --------------------------------------------------------------
+  // Sending reaches real people, so it is blocked in plan mode; reading and
+  // listing only touch fastcar's own copy of the history.
+  s("signal_threads", "Signal threads", "List Signal conversations, groups and contacts.", false),
+  s("signal_read", "Read Signal thread", "Read a Signal thread, optionally waiting for a reply.", false),
+  s("signal_send", "Send Signal message", "Send a Signal message to a person or group.", true),
+
   // ---- Git -----------------------------------------------------------------
   g("git_clone", "Clone repository", "Clone a repository into the VM and register it.", true),
   g("git_pull", "Pull", "Pull the current branch.", true),
@@ -287,6 +302,12 @@ function a(name: string, label: string, description: string, mutating: boolean):
   return {
     name, label, description, category: "artifacts",
     builtin: false, mutating, requires: "artifacts", group: "artifacts",
+  };
+}
+function s(name: string, label: string, description: string, mutating: boolean): ToolDef {
+  return {
+    name, label, description, category: "signal",
+    builtin: false, mutating, requires: "signal", group: "signal",
   };
 }
 function p(name: string, label: string, description: string, mutating: boolean): ToolDef {
@@ -381,7 +402,7 @@ export interface ToolInfoRow {
 }
 
 /**
- * Which optional services this server process actually has. Only these three
+ * Which optional services this server process actually has. Only these
  * vary per deployment; the subagent manager and the ask/plan bridges are
  * created per session by the agent factory, so from the catalog's point of
  * view they are always available.
@@ -390,19 +411,21 @@ export interface ServerCapabilities {
   email: boolean;
   artifacts: boolean;
   mcp: boolean;
+  signal: boolean;
 }
 
 const DEP_REASON: Partial<Record<ToolDep, string>> = {
   email: "no SMTP server is configured",
   artifacts: "the artifact store is not available",
   mcp: "the MCP registry is not available",
+  signal: "Signal is not configured (set SIGNAL_ACCOUNT)",
 };
 
 export function listTools(caps: ServerCapabilities): ToolInfoRow[] {
   return TOOLS.map((t) => {
     const dep = t.requires;
     const available =
-      dep === "email" || dep === "artifacts" || dep === "mcp" ? caps[dep] : true;
+      dep === "email" || dep === "artifacts" || dep === "mcp" || dep === "signal" ? caps[dep] : true;
     return {
       name: t.name,
       label: t.label,
@@ -422,7 +445,8 @@ export function listTools(caps: ServerCapabilities): ToolInfoRow[] {
 
 /**
  * The conductor's allowlist, moved verbatim from conductor.ts (order included)
- * so the seeded builtin agent grants exactly what it granted before. Tools
+ * so the seeded builtin agent grants exactly what it granted before, plus the
+ * signal_* tools added since (last, so the old prefix is untouched). Tools
  * whose dependency is absent are dropped by buildToolset, which is what the
  * conditional spreads in conductor.ts used to do by hand.
  */
@@ -435,6 +459,8 @@ export const CONDUCTOR_DEFAULT_TOOLS: readonly string[] = [
   "heyctl",
   ...namesInGroup("artifacts"),
   ...namesInGroup("mcp"),
+  // Dropped by buildToolset unless SIGNAL_ACCOUNT is set.
+  ...namesInGroup("signal"),
 ];
 
 /** Read-only git, derived rather than hand-listed: git_status + git_list_repos. */

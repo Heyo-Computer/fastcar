@@ -328,6 +328,22 @@ ws.on("open", () => {
       assert(true, "removal is broadcast to the UI");
     }
 
+    // Signal: the agent sends a message and waits on the thread for the reply.
+    // Needs a server started with SIGNAL_ACCOUNT and SIGNAL_CLI_PATH pointing at
+    // the fake (src/test/fixtures/fake-signal-cli), whose state lists this
+    // number as a contact — it echoes direct messages back.
+    const signalTo = process.env.FASTCAR_SMOKE_SIGNAL_TO;
+    if (signalTo) {
+      send({ type: "prompt", threadId, text: `send a signal message to ${signalTo}: hello from smoke` });
+      const isTool = (m: Extract<ServerMessage, { type: "event" }>, text: string) =>
+        m.threadId === threadId && m.agent === "conductor" && m.ev.kind === "tool_end" && m.ev.result.includes(text);
+      await waitFor("event", (m) => isTool(m, "Sent to"), 60_000);
+      assert(true, "agent sent a Signal message");
+      await waitFor("event", (m) => isTool(m, "echo: hello from smoke"), 60_000);
+      assert(true, "agent waited on the Signal thread and read the reply");
+      await waitFor("status", (m) => m.threadId === threadId && m.status === "idle", 60_000);
+    }
+
     const bareRepo = process.env.FASTCAR_SMOKE_BARE_REPO;
     if (bareRepo) {
       const repoName = `wssmoke-${Date.now()}`;

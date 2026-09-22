@@ -16,6 +16,7 @@ import { buildToolset, CONDITIONAL_PLAN_TOOLS, isMutating } from "../tools/regis
 import type { McpManager } from "../services/mcp.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
+import type { SignalService } from "../services/signal.js";
 import { composeAgentPrompt } from "./prompts.js";
 import {
   conductorEffortToThinkingLevel,
@@ -46,6 +47,8 @@ export interface AgentSessionDeps {
   artifacts?: ArtifactService;
   /** MCP server registry for the mcp_* tools. Optional in dev/smoke. */
   mcp?: McpManager;
+  /** signal-cli bridge for the signal_* tools. Absent unless SIGNAL_ACCOUNT is set. */
+  signal?: SignalService;
   /** Existing Pi JSONL session file to resume, or null for a fresh session. */
   sessionFile: string | null;
   /** Effort for this session's turns, already resolved (agent pin > ⚙ > env). */
@@ -101,6 +104,7 @@ export async function createManagedSession(deps: AgentSessionDeps): Promise<Agen
     artifacts: deps.artifacts,
     mcp: deps.mcp,
     allowedMcpServers: agent.mcpServers ?? undefined,
+    signal: deps.signal,
   });
 
   const { session } = await createAgentSession({
