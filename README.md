@@ -278,8 +278,14 @@ recurses forever.
       SSE stream.
     - **OAuth**: leave the headers empty. A server that follows the MCP
       authorization spec answers 401 and points at its authorization server;
-      fastcar discovers it, registers itself as a client, and gives you a
-      **Sign in** link. The install isn't finished, and nothing is registered,
+      fastcar discovers it, identifies itself as a client, and gives you a
+      **Sign in** link. It identifies itself either by dynamic client
+      registration or, when the authorization server supports Client ID
+      Metadata Documents (Loops, for one, supports nothing else), by using the
+      URL of `/api/mcp/oauth/client-metadata.json` as its client id. That one
+      needs `FASTCAR_PUBLIC_URL` to be `https://` and the path to be reachable
+      by the provider, so it is in `auth.public_paths`; on plain-http or
+      localhost setups those servers can't be connected via OAuth. The install isn't finished, and nothing is registered,
       until you complete the sign-in and the server answers `tools/list`. The
       provider redirects back to `/api/mcp/oauth/callback`, which is behind
       the normal sign-in gate (it is *not* in `auth.public_paths`) and is
@@ -287,8 +293,8 @@ recurses forever.
       If the provider revokes them, the server shows **needs sign-in** and ↻
       starts a new one. An agent that installs an OAuth server gets the link in
       the tool result and passes it to you, since it can't open a browser.
-    - A 401 from a server that offers no OAuth says so plainly and asks for a
-      key, rather than surfacing the raw response.
+    - A 401 from a server whose OAuth fastcar can't use says why and what to
+      change, rather than surfacing the raw response.
   - **Code to run locally** — a GitHub URL such as
     `https://github.com/Heyo-Computer/heyo-public/tree/main/mcp` (branch and
     subdirectory are read from the URL) or any git URL. It is cloned into

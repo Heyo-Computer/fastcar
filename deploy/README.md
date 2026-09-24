@@ -61,12 +61,17 @@ meant to be opened by anyone without signing in. The app serves that prefix
 with no auth of its own (ids are UUIDs; the URL is the capability), so the
 only thing standing between a link and the world is app-lb's sign-in gate.
 The spec's `auth.public_paths` therefore lists `/artifacts/` (and
-`/api/health` for the pool's health checks) so the gate skips them; everything
-else, `/api/*` and the UI included, stays behind Google sign-in. If you manage
-the gate with `heyctl set auth` instead of the spec, add the same prefix:
+`/api/health` for the pool's health checks) so the gate skips them, along with
+`/pt/` (prompt triggers) and `/api/mcp/oauth/client-metadata.json` — fastcar's
+OAuth client metadata document, which MCP authorization servers such as Loops
+fetch server-to-server to identify fastcar (it holds only a name and the
+redirect URI). Everything else, `/api/*` and the UI included, stays behind
+Google sign-in. If you manage the gate with `heyctl set auth` instead of the
+spec, add the same prefixes:
 
 ```sh
-heyctl set auth fastcar --public-path /api/health --public-path /artifacts/
+heyctl set auth fastcar --public-path /api/health --public-path /artifacts/ \
+  --public-path /pt/ --public-path /api/mcp/oauth/client-metadata.json
 ```
 
 `FASTCAR_PUBLIC_URL` must be the origin the browser uses (`https://` + the

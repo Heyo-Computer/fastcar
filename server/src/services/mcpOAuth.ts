@@ -4,8 +4,8 @@
  * The MCP authorization spec has a remote server answer 401 and point at an
  * OAuth 2.1 authorization server. The SDK already knows the whole dance —
  * protected-resource and authorization-server discovery, dynamic client
- * registration, PKCE, token exchange and refresh — through its
- * OAuthClientProvider interface. What it cannot do is decide where
+ * registration or a URL-based client id (CIMD), PKCE, token exchange and
+ * refresh — through its OAuthClientProvider interface. What it cannot do is decide where
  * credentials live or how a user gets sent to sign in; that is this class.
  *
  * Two fastcar-specific choices:
@@ -42,6 +42,37 @@ export interface OAuthState {
 /** Where the authorization server sends the browser back to. */
 export const OAUTH_CALLBACK_PATH = "/api/mcp/oauth/callback";
 
+/**
+ * fastcar's Client ID Metadata Document (CIMD, SEP-991). Some authorization
+ * servers (Loops) offer no dynamic client registration; instead the client's
+ * `client_id` *is* an HTTPS URL, and the server fetches it to learn the
+ * redirect URIs. So this path must be publicly reachable — it is listed in
+ * deploy/fastcar.json auth.public_paths — and it only works when
+ * FASTCAR_PUBLIC_URL is https and reachable from the provider.
+ */
+export const OAUTH_CLIENT_METADATA_PATH = "/api/mcp/oauth/client-metadata.json";
+
+/** The registration fastcar presents, whether sent to /register or served as a CIMD. */
+export function oauthClientMetadata(callbackUrl: string): OAuthClientMetadata {
+  return {
+    client_name: "fastcar",
+    redirect_uris: [callbackUrl],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    // A public client: PKCE carries the proof, there is no secret to leak.
+    token_endpoint_auth_method: "none",
+  };
+}
+
+/**
+ * The CIMD URL for a deployment, or undefined when it cannot be one: the SDK
+ * rejects non-https client ids outright, which would break the dynamic
+ * registration fallback too.
+ */
+export function clientMetadataUrlFor(publicUrl: string): string | undefined {
+  return publicUrl.startsWith("https://") ? `${publicUrl}${OAUTH_CLIENT_METADATA_PATH}` : undefined;
+}
+
 export class McpOAuthProvider implements OAuthClientProvider {
   /** Set when the SDK wants the user sent to sign in. */
   pendingAuthorizationUrl: URL | null = null;
@@ -56,6 +87,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private data: OAuthState,
     private readonly callbackUrl: string,
     private readonly persist: (data: OAuthState) => Promise<void>,
+    /** Used as the client_id when the authorization server supports CIMD. */
+    readonly clientMetadataUrl?: string,
   ) {}
 
   get redirectUrl(): string {
@@ -63,14 +96,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
-    return {
-      client_name: "fastcar",
-      redirect_uris: [this.callbackUrl],
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      // A public client: PKCE carries the proof, there is no secret to leak.
-      token_endpoint_auth_method: "none",
-    };
+    return oauthClientMetadata(this.callbackUrl);
   }
 
   state(): string {

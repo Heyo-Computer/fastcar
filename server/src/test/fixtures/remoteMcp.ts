@@ -30,6 +30,12 @@ export interface RemoteMcpOptions {
    * exercise the SDK's whole client flow.
    */
   oauth?: boolean;
+  /**
+   * OAuth mode, Loops-style: no dynamic registration, only Client ID Metadata
+   * Documents. `client_id` is a URL; this stands in for the authorization
+   * server fetching it, and returns the document (or null when unreachable).
+   */
+  cimd?: (clientId: string) => Promise<{ client_id?: string; redirect_uris?: string[] } | null>;
 }
 
 export interface RemoteMcp {
@@ -97,7 +103,9 @@ export async function startRemoteMcp(opts: RemoteMcpOptions = {}): Promise<Remot
         issuer: base,
         authorization_endpoint: `${base}/authorize`,
         token_endpoint: `${base}/token`,
-        registration_endpoint: `${base}/register`,
+        ...(opts.cimd
+          ? { client_id_metadata_document_supported: true }
+          : { registration_endpoint: `${base}/register` }),
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         code_challenge_methods_supported: ["S256"],
@@ -105,7 +113,7 @@ export async function startRemoteMcp(opts: RemoteMcpOptions = {}): Promise<Remot
       });
       return true;
     }
-    if (p === "/register" && req.method === "POST") {
+    if (p === "/register" && req.method === "POST" && !opts.cimd) {
       const body = JSON.parse((await readRaw(req)) || "{}") as { redirect_uris?: string[] };
       const clientId = `client-${randomUUID()}`;
       clients.set(clientId, { redirectUris: body.redirect_uris ?? [] });
@@ -117,6 +125,11 @@ export async function startRemoteMcp(opts: RemoteMcpOptions = {}): Promise<Remot
       const q = url.searchParams;
       const clientId = q.get("client_id") ?? "";
       const redirectUri = q.get("redirect_uri") ?? "";
+      if (opts.cimd && !clients.has(clientId)) {
+        // CIMD: the document must name itself as the client_id it was fetched from.
+        const doc = await opts.cimd(clientId).catch(() => null);
+        if (doc?.client_id === clientId) clients.set(clientId, { redirectUris: doc.redirect_uris ?? [] });
+      }
       if (!clients.get(clientId)?.redirectUris.includes(redirectUri)) {
         json(res, 400, { error: "invalid_request", error_description: "unknown client or redirect_uri" });
         return true;
