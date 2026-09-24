@@ -22,6 +22,7 @@ import { AppSettings } from "./services/appSettings.js";
 import { SubagentSettings } from "./services/subagentSettings.js";
 import { McpManager } from "./services/mcp.js";
 import { AgentService } from "./services/agents.js";
+import { adoptUnregisteredRepos } from "./services/git.js";
 import { Scheduler } from "./services/scheduler.js";
 import { WebhookTokenStore } from "./services/webhookTokens.js";
 import { startMockOpenAI } from "./dev/mock-openai.js";
@@ -53,6 +54,8 @@ manager.attachScheduler(scheduler);
 await mcp.start();
 // Unwedges schedules left mid-run by a previous process, then starts ticking.
 await scheduler.start();
+// Registers repos an agent cloned with raw `git clone` before this process started.
+void adoptUnregisteredRepos(cfg).catch((err) => console.error("failed to adopt unregistered repos:", err));
 
 const app = Fastify({ logger: { level: "info" } });
 await app.register(fastifyWebsocket);

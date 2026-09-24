@@ -63,6 +63,8 @@ export interface ThreadMeta {
   lastMessagePreview?: string | null;
   /** Derived, never stored — see db/threads.ts isUnread(). */
   unread?: boolean;
+  /** Dismissed from the inbox with no reply since; the thread itself is untouched. */
+  inboxHidden?: boolean;
   /** Public, unauthenticated trigger URL for a prompt thread (`/pt/<id>`), or null for chat threads. */
   publicUrl?: string | null;
   createdAt: string; // ISO

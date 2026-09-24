@@ -34,6 +34,10 @@ interface InboxRow {
 const UNREAD_SQL = `t.last_message_at IS NOT NULL
   AND (t.read_at IS NULL OR t.read_at < t.last_message_at)`;
 
+/** Dismissed with no reply since. Mirrors isInboxHidden() in db/threads.ts. */
+const DISMISSED_SQL = `t.inbox_dismissed_at IS NOT NULL
+  AND (t.last_message_at IS NULL OR t.last_message_at <= t.inbox_dismissed_at)`;
+
 export async function listInbox(opts: {
   agentId?: string;
   filter?: InboxFilter;
@@ -43,6 +47,7 @@ export async function listInbox(opts: {
   const filter = opts.filter ?? "all";
   const where = [
     "NOT t.archived",
+    `NOT (${DISMISSED_SQL})`,
     "($1::uuid IS NULL OR t.agent_id = $1)",
     filter === "unread" ? `(${UNREAD_SQL})` : null,
     filter === "needs_you" ? "t.status IN ('awaiting_input','awaiting_approval')" : null,
@@ -128,4 +133,37 @@ export async function markAllRead(agentId?: string): Promise<void> {
      WHERE NOT t.archived AND ($1::uuid IS NULL OR t.agent_id = $1) AND ${UNREAD_SQL}`,
     [agentId ?? null],
   );
+}
+
+/**
+ * Dismiss one inbox row, or bring it back. Dismissing also marks it read: a
+ * notification you cleared away should not keep counting as unread.
+ */
+export async function dismiss(threadId: string, dismissed: boolean): Promise<boolean> {
+  const { rowCount } = await getPool().query(
+    dismissed
+      ? "UPDATE threads SET inbox_dismissed_at = now(), read_at = now() WHERE id = $1"
+      : "UPDATE threads SET inbox_dismissed_at = NULL WHERE id = $1",
+    [threadId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Dismiss every row in an inbox view — the "Clear" button. Skips threads that
+ * are running or waiting on you: clearing should not quietly bury a question
+ * or a plan. Returns the ids so the caller can broadcast them and offer undo.
+ */
+export async function dismissInbox(opts: { agentId?: string; filter?: InboxFilter }): Promise<string[]> {
+  const filter = opts.filter ?? "all";
+  const { rows } = await getPool().query<{ id: string }>(
+    `UPDATE threads t SET inbox_dismissed_at = now(), read_at = now()
+     WHERE NOT t.archived AND NOT (${DISMISSED_SQL})
+       AND ($1::uuid IS NULL OR t.agent_id = $1)
+       AND t.status NOT IN ('running','awaiting_input','awaiting_approval')
+       ${filter === "unread" ? `AND (${UNREAD_SQL})` : ""}
+     RETURNING t.id`,
+    [opts.agentId ?? null],
+  );
+  return rows.map((r) => r.id);
 }

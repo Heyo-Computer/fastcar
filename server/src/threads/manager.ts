@@ -12,6 +12,7 @@ import type {
   ThreadMode,
   ThreadStatus,
   ReasoningEffort,
+  InboxFilter,
 } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { insertEvents, maxSeq, type EventInsert } from "../db/events.js";
@@ -23,7 +24,7 @@ import type { ThreadRecord } from "../db/threads.js";
 
 import { createManagedSession, type AgentSessionHandle } from "../pi/agentSession.js";
 import { appSettingsEvents, type AppSettings } from "../services/appSettings.js";
-import { collectRepoStatuses, gitEvents } from "../services/git.js";
+import { adoptUnregisteredRepos, collectRepoStatuses, gitEvents } from "../services/git.js";
 import { mcpEvents, type McpManager } from "../services/mcp.js";
 import { expandMentions } from "../services/mentions.js";
 import { translateSessionEvent } from "../pi/events.js";
@@ -131,6 +132,15 @@ export class ThreadManager {
   private get agents(): AgentService {
     this.ownAgents ??= this.extra.agents ?? new AgentService(this.cfg, this.settings, this.mcp);
     return this.ownAgents;
+  }
+
+  /** Register raw `git clone`s under the repos dir; adoption broadcasts via gitEvents. */
+  private async adoptRepos(): Promise<void> {
+    try {
+      await adoptUnregisteredRepos(this.cfg);
+    } catch (err) {
+      console.error("failed to adopt unregistered repos:", err);
+    }
   }
 
   async broadcastRepos(): Promise<void> {
@@ -250,6 +260,13 @@ export class ThreadManager {
     if (targetId) {
       const rt = await this.getRuntime(targetId);
       if (rt.status !== "idle" || rt.mode !== "act") targetId = undefined;
+    }
+    if (targetId) {
+      // A role without git_clone would fall back to raw `git clone`, leaving a
+      // repo the registry (sidebar, `@` menu) never hears about.
+      const rec = await threadsDb.getThread(targetId);
+      const agent = await this.agents.forThread(rec?.agentId ?? null);
+      if (!agent.tools.includes("git_clone")) targetId = undefined;
     }
     if (!targetId) {
       const meta = await this.createThread("act");
@@ -836,6 +853,8 @@ export class ThreadManager {
         ...this.inboxPatch(rt, rt.lastAssistantText),
       });
     }
+    // The turn may have cloned with bash; pick that up without delaying status.
+    void this.adoptRepos();
     await this.emitStatus(rt);
     await this.maybeAutoTitle(rt);
     this.broadcastInboxCounts();
@@ -877,6 +896,25 @@ export class ThreadManager {
   async markAllRead(agentId?: string): Promise<void> {
     await inboxDb.markAllRead(agentId);
     this.broadcastInboxCounts();
+  }
+
+  /** Dismiss (or restore) a thread's inbox row. The thread itself is untouched. */
+  async setDismissed(threadId: string, dismissed: boolean): Promise<void> {
+    if (!(await inboxDb.dismiss(threadId, dismissed))) throw new Error(`no thread ${threadId}`);
+    const rec = await threadsDb.getThread(threadId);
+    if (rec) this.broadcast({ type: "thread_updated", thread: this.enrichMeta(rec) });
+    this.broadcastInboxCounts();
+  }
+
+  /** The inbox "Clear" button: dismiss a view's settled rows. Returns their ids for undo. */
+  async clearInbox(opts: { agentId?: string; filter?: InboxFilter }): Promise<string[]> {
+    const ids = await inboxDb.dismissInbox(opts);
+    for (const id of ids) {
+      const rec = await threadsDb.getThread(id);
+      if (rec) this.broadcast({ type: "thread_updated", thread: this.enrichMeta(rec) });
+    }
+    this.broadcastInboxCounts();
+    return ids;
   }
 
   private looksLikePlan(rt: ThreadRuntime): boolean {

@@ -25,6 +25,7 @@ interface ThreadRow {
   last_message_agent: string | null;
   last_error: string | null;
   read_at: Date | null;
+  inbox_dismissed_at: Date | null;
   source: ThreadSource;
   schedule_id: string | null;
   archived: boolean;
@@ -47,6 +48,8 @@ export interface ThreadRecord extends ThreadMeta {
   lastMessageAgent: string | null;
   lastError: string | null;
   readAt: string | null;
+  /** When the inbox row was dismissed; see 009_inbox_dismiss.sql. */
+  inboxDismissedAt: string | null;
   source: ThreadSource;
   /** The schedule whose firing created this thread, when there was one. */
   scheduleId: string | null;
@@ -72,6 +75,7 @@ function toRecord(row: ThreadRow): ThreadRecord {
     lastMessageAgent: row.last_message_agent,
     lastError: row.last_error,
     readAt: row.read_at?.toISOString() ?? null,
+    inboxDismissedAt: row.inbox_dismissed_at?.toISOString() ?? null,
     source: row.source,
     scheduleId: row.schedule_id,
   };
@@ -80,11 +84,17 @@ function toRecord(row: ThreadRow): ThreadRecord {
 export function toMeta(rec: ThreadRecord): ThreadMeta {
   const {
     piSessionFile: _f, pending: _p, promptConfig: _c, ownerId: _o,
-    lastMessageAgent: _a, lastError: _e, readAt: _r, ...rest
+    lastMessageAgent: _a, lastError: _e, readAt: _r, inboxDismissedAt: _d, ...rest
   } = rec;
   // `unread` is derived, never stored: a reply landing after you read re-marks
   // the thread without anything having to invalidate a flag.
-  return { ...rest, unread: isUnread(rec) };
+  return { ...rest, unread: isUnread(rec), inboxHidden: isInboxHidden(rec) };
+}
+
+/** Dismissed from the inbox, with no reply since. Mirrors DISMISSED_SQL in db/inbox.ts. */
+export function isInboxHidden(rec: Pick<ThreadRecord, "lastMessageAt" | "inboxDismissedAt">): boolean {
+  if (!rec.inboxDismissedAt) return false;
+  return !rec.lastMessageAt || rec.lastMessageAt <= rec.inboxDismissedAt;
 }
 
 /** The one definition of unread. Mirrors the SQL in inboxCounts(). */
@@ -139,6 +149,7 @@ export async function updateThread(
     lastMessageAgent: string | null;
     lastError: string | null;
     readAt: Date | null;
+    inboxDismissedAt: Date | null;
     source: ThreadSource;
     scheduleId: string | null;
   }>,
@@ -163,6 +174,7 @@ export async function updateThread(
   if (patch.lastMessageAgent !== undefined) col("last_message_agent", patch.lastMessageAgent);
   if (patch.lastError !== undefined) col("last_error", patch.lastError);
   if (patch.readAt !== undefined) col("read_at", patch.readAt);
+  if (patch.inboxDismissedAt !== undefined) col("inbox_dismissed_at", patch.inboxDismissedAt);
   if (patch.source !== undefined) col("source", patch.source);
   if (patch.scheduleId !== undefined) col("schedule_id", patch.scheduleId);
   values.push(id);

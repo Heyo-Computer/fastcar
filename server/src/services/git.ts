@@ -134,6 +134,47 @@ export async function cloneRepo(
   return record;
 }
 
+/**
+ * Register any git checkout under the repos dir that the registry does not
+ * know about. An agent that clones with raw `git clone` (a role without
+ * git_clone, or a model ignoring the prompt) leaves a repo it can work in but
+ * that the sidebar and the `@` menu — both registry-backed — never show.
+ * Returns the adopted names; emits "changed" only when there were any.
+ */
+export async function adoptUnregisteredRepos(cfg: Config): Promise<string[]> {
+  let dirents: fs.Dirent[];
+  try {
+    dirents = fs.readdirSync(cfg.reposDir, { withFileTypes: true });
+  } catch {
+    return []; // no repos dir yet
+  }
+  const known = await listRepos();
+  const knownPaths = new Set(known.map((r) => path.resolve(r.path)));
+  const knownNames = new Set(known.map((r) => r.name));
+  const adopted: string[] = [];
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory()) continue;
+    const dir = path.resolve(cfg.reposDir, dirent.name);
+    if (knownPaths.has(dir) || knownNames.has(dirent.name)) continue;
+    if (!fs.existsSync(path.join(dir, ".git"))) continue;
+    try {
+      const url = (
+        await runGit(["remote", "get-url", "origin"], dir).catch(() => ({ stdout: "" }))
+      ).stdout.trim();
+      const branch = (
+        await runGit(["rev-parse", "--abbrev-ref", "HEAD"], dir).catch(() => ({ stdout: "" }))
+      ).stdout.trim();
+      await registerRepo(dirent.name, url, dir, branch || null);
+      await reindexForSearch(dir);
+      adopted.push(dirent.name);
+    } catch (err) {
+      console.error(`failed to adopt repo at ${dir}:`, err);
+    }
+  }
+  if (adopted.length) gitEvents.emit("changed");
+  return adopted;
+}
+
 export async function pullRepo(name: string, signal?: AbortSignal): Promise<string> {
   const repo = await resolveRepo(name);
   const { stdout, stderr } = await runGit(["pull", "--ff-only"], repo.path, signal);

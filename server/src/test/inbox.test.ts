@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { getPool, closePool } from "../db/pool.js";
 import { migrate } from "../db/migrate.js";
 import * as threadsDb from "../db/threads.js";
-import { inboxCounts, listInbox, markAllRead, markRead } from "../db/inbox.js";
+import { dismiss, dismissInbox, inboxCounts, listInbox, markAllRead, markRead } from "../db/inbox.js";
 import { AgentService } from "../services/agents.js";
 import { loadConfig } from "../config.js";
 import type { AgentDraft } from "@fastcar/shared";
@@ -176,5 +176,51 @@ test("inbox", async (t) => {
     assert.equal(row!.artifacts.length, 1);
     assert.equal(row!.artifacts[0]!.name, "brief.html");
     assert.equal(row!.artifacts[0]!.url, `${PUBLIC}/artifacts/${rows[0]!.id}/brief.html`);
+  });
+
+  await t.test("dismissing hides the inbox row, not the thread, until a new reply", async () => {
+    const tmp = await threadsDb.createThread("act", "chat", null, agentA.id);
+    ids.push(tmp.id);
+    await threadsDb.updateThread(tmp.id, { lastMessageAt: new Date(Date.now() - 60_000) });
+
+    await dismiss(tmp.id, true);
+    assert.equal((await mine([tmp.id], { publicUrlBase: PUBLIC })).length, 0);
+    const rec = await threadsDb.getThread(tmp.id);
+    assert.equal(rec?.archived, false, "the thread itself is untouched");
+    assert.ok((await threadsDb.listThreads({ agentId: agentA.id })).some((x) => x.id === tmp.id));
+    assert.equal(threadsDb.toMeta(rec!).inboxHidden, true);
+    assert.equal(threadsDb.toMeta(rec!).unread, false, "a dismissed row stops counting as unread");
+
+    // A reply after the dismissal brings the row back, unread.
+    await threadsDb.updateThread(tmp.id, { lastMessageAt: new Date(Date.now() + 1000) });
+    const [back] = await mine([tmp.id], { publicUrlBase: PUBLIC });
+    assert.equal(back?.unread, true);
+
+    // Undo clears the dismissal outright.
+    await dismiss(tmp.id, true);
+    await dismiss(tmp.id, false);
+    assert.equal((await mine([tmp.id], { publicUrlBase: PUBLIC })).length, 1);
+  });
+
+  // Scoped by agent so the dev database's own threads are never touched.
+  await t.test("clear dismisses a view but keeps what is waiting on you", async () => {
+    const read = await threadsDb.createThread("act", "chat", null, agentA.id);
+    const unread = await threadsDb.createThread("act", "chat", null, agentA.id);
+    const waiting = await threadsDb.createThread("act", "chat", null, agentA.id);
+    ids.push(read.id, unread.id, waiting.id);
+    const past = new Date(Date.now() - 60_000);
+    await threadsDb.updateThread(read.id, { lastMessageAt: past, readAt: new Date() });
+    await threadsDb.updateThread(unread.id, { lastMessageAt: past });
+    await threadsDb.updateThread(waiting.id, { lastMessageAt: past, status: "awaiting_input" });
+
+    const cleared = await dismissInbox({ agentId: agentA.id, filter: "unread" });
+    assert.ok(cleared.includes(unread.id));
+    assert.ok(!cleared.includes(read.id), "the unread view leaves read threads alone");
+    assert.ok(!cleared.includes(waiting.id), "a question is never cleared away");
+
+    await dismissInbox({ agentId: agentA.id });
+    const left = await mine([read.id, unread.id, waiting.id], { publicUrlBase: PUBLIC });
+    assert.deepEqual(left.map((i) => i.threadId), [waiting.id]);
+    assert.equal((await threadsDb.getThread(read.id))?.archived, false);
   });
 });

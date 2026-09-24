@@ -504,6 +504,11 @@ export const useStore = create<AppState>((set, get) => ({
         break;
       }
       case "thread_updated": {
+        // Dismissed from the inbox: the row goes, the thread stays. Coming
+        // back (undo, or a reply after the dismissal) needs the preview and
+        // artifacts the broadcast lacks, so refetch.
+        const wasHidden = state.threads.find((t) => t.id === msg.thread.id)?.inboxHidden;
+        if (wasHidden && !msg.thread.inboxHidden) void get().loadInbox();
         const threads = state.threads.map((t) => (t.id === msg.thread.id ? msg.thread : t));
         if (!threads.some((t) => t.id === msg.thread.id)) threads.unshift(msg.thread);
         threads.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -525,7 +530,10 @@ export const useStore = create<AppState>((set, get) => ({
               }
             : i,
         );
-        set({ threads, inbox });
+        set({
+          threads,
+          inbox: msg.thread.inboxHidden ? inbox.filter((i) => i.threadId !== msg.thread.id) : inbox,
+        });
         break;
       }
       case "status": {

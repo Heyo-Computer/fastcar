@@ -19,7 +19,7 @@ export function AgentsView() {
       <button
         key={a.id}
         onClick={() => navigate({ name: "agent", agentId: a.id, tab: "threads" })}
-        className="flex flex-col gap-1.5 rounded-xl border border-border bg-panel-2/30 p-4 text-left hover:border-accent-dim/40 hover:bg-panel-2/60"
+        className="flex min-w-0 flex-col gap-1.5 rounded-xl border border-border bg-panel-2/30 p-4 text-left hover:border-accent-dim/40 hover:bg-panel-2/60"
       >
         <span className="flex items-center gap-2">
           <span className="text-lg" aria-hidden>
@@ -35,10 +35,10 @@ export function AgentsView() {
             <span className="rounded-full bg-accent-dim/20 px-2 text-[0.68rem] text-accent">{unread}</span>
           )}
         </span>
-        <span className="truncate text-[0.78rem] text-ink-dim">
+        <span className="line-clamp-2 break-words text-[0.78rem] text-ink-dim">
           {a.description || <span className="italic text-ink-faint">No description</span>}
         </span>
-        <span className="text-[0.7rem] text-ink-faint">
+        <span className="break-words text-[0.7rem] text-ink-faint">
           {a.resolved.modelSlug} · {a.resolved.tools.length} tools
           {mine.length > 0 &&
             ` · ${mine.length} schedule${mine.length > 1 ? "s" : ""}`}
@@ -61,7 +61,7 @@ export function AgentsView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-border bg-panel px-6 py-3">
+      <header className="flex items-center gap-3 border-b border-border bg-panel py-3 pr-4 pl-16 sm:px-6">
         <h2 className="font-medium text-ink">Agents</h2>
         <button
           onClick={() => navigate({ name: "agentNew" })}
@@ -70,12 +70,12 @@ export function AgentsView() {
           + New agent
         </button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{active.map(card)}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{active.map(card)}</div>
         {archived.length > 0 && (
           <>
             <h3 className="mt-8 mb-2 text-[0.72rem] uppercase tracking-wide text-ink-faint">Archived</h3>
-            <div className="grid gap-3 opacity-60 sm:grid-cols-2 lg:grid-cols-3">{archived.map(card)}</div>
+            <div className="grid grid-cols-1 gap-3 opacity-60 sm:grid-cols-2 lg:grid-cols-3">{archived.map(card)}</div>
           </>
         )}
       </div>

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { InboxItem } from "@fastcar/shared";
 import { useStore } from "../state/store.ts";
 import { navigate, type InboxFilter } from "../lib/router.ts";
@@ -34,12 +34,39 @@ const SOURCE_BADGE: Record<string, string> = {
   trigger: "triggered",
 };
 
-function Row({ item }: { item: InboxItem }) {
+/**
+ * Hide or restore inbox rows. Only the notification goes — the thread stays in
+ * the thread list. The broadcast that follows updates every open inbox.
+ */
+async function setDismissed(threadIds: string[], dismissed: boolean): Promise<void> {
+  await Promise.all(
+    threadIds.map((id) =>
+      fetch(`/api/inbox/${id}/dismiss`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dismissed }),
+      }),
+    ),
+  );
+}
+
+function Row({ item, onDismiss }: { item: InboxItem; onDismiss: () => void }) {
+  const open = () => navigate({ name: "thread", threadId: item.threadId });
   return (
-    <button
-      onClick={() => navigate({ name: "thread", threadId: item.threadId })}
+    // A div, not a button: the row holds its own buttons and links, and
+    // interactive content cannot nest inside a <button>.
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          open();
+        }
+      }}
       className={
-        "group flex w-full gap-3 border-b border-border/60 px-4 py-3 text-left hover:bg-panel-2/60 " +
+        "group flex w-full cursor-pointer gap-3 border-b border-border/60 px-4 py-3 text-left hover:bg-panel-2/60 " +
         (item.unread ? "bg-panel-2/20" : "")
       }
     >
@@ -71,6 +98,17 @@ function Row({ item }: { item: InboxItem }) {
             {item.title}
           </span>
           <span className="shrink-0 text-[0.68rem] text-ink-faint">{ago(item.lastMessageAt)}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDismiss();
+            }}
+            title="Remove from the inbox — the thread stays; a new reply brings it back"
+            aria-label={`Dismiss ${item.title}`}
+            className="-my-1 shrink-0 rounded px-1.5 py-0.5 text-[0.68rem] text-ink-faint hover:bg-panel hover:text-ink focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+          >
+            Dismiss
+          </button>
         </span>
         <span className="mt-0.5 flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-[0.78rem] text-ink-faint">
@@ -110,7 +148,7 @@ function Row({ item }: { item: InboxItem }) {
           </span>
         )}
       </span>
-    </button>
+    </div>
   );
 }
 
@@ -124,10 +162,35 @@ export function InboxView({ filter }: { filter: InboxFilter }) {
   const inbox = useStore((s) => s.inbox);
   const totalUnread = useStore((s) => s.totalUnread);
   const loadInbox = useStore((s) => s.loadInbox);
+  /** Rows the last dismiss or clear took away, for Undo. */
+  const [undo, setUndo] = useState<{ ids: string[]; label: string } | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   useEffect(() => {
     void loadInbox();
   }, [loadInbox, filter]);
+
+  useEffect(() => setConfirmClear(false), [filter]);
+
+  const dismissOne = (item: InboxItem) => {
+    void setDismissed([item.threadId], true);
+    setUndo({ ids: [item.threadId], label: `Dismissed “${item.title}”` });
+  };
+
+  const clear = async () => {
+    setConfirmClear(false);
+    const params = new URLSearchParams();
+    if (filter !== "all") params.set("filter", filter);
+    const res = await fetch(`/api/inbox/clear?${params}`, { method: "POST" });
+    if (!res.ok) return;
+    const { dismissed } = (await res.json()) as { dismissed: string[] };
+    if (dismissed.length) {
+      setUndo({
+        ids: dismissed,
+        label: `Cleared ${dismissed.length} notification${dismissed.length === 1 ? "" : "s"}`,
+      });
+    }
+  };
 
   // Filtered here rather than in a selector: a selector returning a fresh
   // array loops useSyncExternalStore (see ArtifactsPanel.tsx).
@@ -148,14 +211,14 @@ export function InboxView({ filter }: { filter: InboxFilter }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center gap-3 border-b border-border bg-panel px-6 py-3">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-panel py-3 pr-4 pl-16 sm:px-6">
         <h2 className="font-medium text-ink">Inbox</h2>
         {totalUnread > 0 && (
           <span className="rounded-full bg-accent-dim/20 px-2 py-px text-[0.68rem] text-accent">
             {totalUnread} unread
           </span>
         )}
-        <div className="ml-auto flex gap-1">
+        <div className="ml-auto flex flex-wrap gap-1">
           {FILTERS.map((f) => (
             <button
               key={f.id}
@@ -181,8 +244,48 @@ export function InboxView({ filter }: { filter: InboxFilter }) {
               Mark all read
             </button>
           )}
+          {/* Clear keeps running and waiting threads, so it has nothing to do under "Needs you". */}
+          {filter !== "needs_you" && items.length > 0 && (
+            <button
+              onClick={() => (confirmClear ? void clear() : setConfirmClear(true))}
+              onBlur={() => setConfirmClear(false)}
+              title="Dismiss every notification in this view, except threads still running or waiting on you. Threads are kept."
+              className={
+                "ml-1 rounded-lg border px-2.5 py-1 text-[0.72rem] " +
+                (confirmClear
+                  ? "border-danger/50 bg-danger/10 text-danger hover:bg-danger/20"
+                  : "border-border text-ink-faint hover:bg-panel-2 hover:text-ink")
+              }
+            >
+              {confirmClear ? "Clear all?" : "Clear"}
+            </button>
+          )}
         </div>
       </header>
+
+      {undo && (
+        <div className="flex items-center gap-3 border-b border-border bg-panel-2/40 px-4 py-2 text-[0.78rem] text-ink-dim">
+          <span className="min-w-0 flex-1 truncate">{undo.label}</span>
+          <button
+            onClick={() => {
+              // Refetch directly too: the broadcast only triggers one for
+              // threads the client already holds.
+              void setDismissed(undo.ids, false).then(() => loadInbox());
+              setUndo(null);
+            }}
+            className="shrink-0 rounded px-2 py-0.5 text-accent hover:bg-accent-dim/20"
+          >
+            Undo
+          </button>
+          <button
+            onClick={() => setUndo(null)}
+            aria-label="Dismiss"
+            className="shrink-0 rounded px-1.5 text-ink-faint hover:bg-panel-2 hover:text-ink"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.map((g) => (
@@ -191,7 +294,7 @@ export function InboxView({ filter }: { filter: InboxFilter }) {
               {g.label}
             </div>
             {g.items.map((i) => (
-              <Row key={i.threadId} item={i} />
+              <Row key={i.threadId} item={i} onDismiss={() => dismissOne(i)} />
             ))}
           </div>
         ))}

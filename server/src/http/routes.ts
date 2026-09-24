@@ -306,6 +306,30 @@ export function registerRoutes(
     return { ok: true };
   });
 
+  /** Hide a thread's inbox row (or, with `dismissed: false`, bring it back); the thread stays. */
+  app.post<{ Params: { threadId: string }; Body: { dismissed?: boolean } | undefined }>(
+    "/api/inbox/:threadId/dismiss",
+    async (req, reply) => {
+      if (!deps.manager) return reply.code(503).send({ error: "thread manager is not available" });
+      try {
+        await deps.manager.setDismissed(req.params.threadId, req.body?.dismissed ?? true);
+      } catch (err) {
+        return reply.code(404).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+      return { ok: true };
+    },
+  );
+
+  /** Dismiss a whole view (running and waiting threads are kept); returns the ids for undo. */
+  app.post<{ Querystring: { agentId?: string; filter?: InboxFilter } }>(
+    "/api/inbox/clear",
+    async (req, reply) => {
+      if (!deps.manager) return reply.code(503).send({ error: "thread manager is not available" });
+      const ids = await deps.manager.clearInbox({ agentId: req.query.agentId, filter: req.query.filter });
+      return { ok: true, dismissed: ids };
+    },
+  );
+
   // --- agents --------------------------------------------------------------
   // Reads are ungated (the builder needs them before anything is saved);
   // writes are admin-only, matching /api/mcp and /api/settings.
