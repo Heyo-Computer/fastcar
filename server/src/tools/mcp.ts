@@ -193,7 +193,7 @@ export function createMcpTools(mcp: McpManager, allowedServers?: readonly string
     name: "mcp_call",
     label: "Call MCP Tool",
     description:
-      "Invoke a tool on an installed MCP server. Check the argument schema with mcp_list_tools first. Tools whose description says DESTRUCTIVE change external systems — confirm with the user before calling them.",
+      "Invoke a tool on an installed MCP server. Check the argument schema with mcp_list_tools first, and pass the tool's own arguments nested inside `arguments`, e.g. {server, tool, arguments: {company: \"acme.com\"}}. Tools whose description says DESTRUCTIVE change external systems — confirm with the user before calling them.",
     parameters: Type.Object({
       server: SERVER_PARAM,
       tool: Type.String({ description: "Tool name as listed by mcp_list_tools" }),
@@ -204,12 +204,11 @@ export function createMcpTools(mcp: McpManager, allowedServers?: readonly string
     execute: async (_id, params, signal) => {
       const block = denied(params.server);
       if (block) throw new Error(block);
-      const text = await mcp.callTool(
-        params.server,
-        params.tool,
-        (params.arguments as Record<string, unknown> | undefined) ?? {},
-        signal,
-      );
+      // Models often flatten the tool's arguments next to server/tool instead of
+      // nesting them under `arguments`; fold any such stray keys back in.
+      const { server: _s, tool: _t, arguments: nested, ...flat } = params as Record<string, unknown>;
+      const args = { ...flat, ...((nested as Record<string, unknown> | undefined) ?? {}) };
+      const text = await mcp.callTool(params.server, params.tool, args, signal);
       return { content: [{ type: "text", text }], details: { server: params.server, tool: params.tool } };
     },
   });
