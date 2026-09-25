@@ -24,7 +24,13 @@ import {
   type McpServerRecord,
 } from "../db/mcpServers.js";
 import { decryptMap, decryptSecret, encryptMap, encryptSecret } from "./secrets.js";
-import { McpOAuthProvider, OAUTH_CALLBACK_PATH, type OAuthState } from "./mcpOAuth.js";
+import {
+  McpOAuthProvider,
+  OAUTH_CALLBACK_PATH,
+  OAUTH_CLIENT_METADATA_PATH,
+  clientMetadataUrlFor,
+  type OAuthState,
+} from "./mcpOAuth.js";
 import { runGit } from "./git.js";
 
 /**
@@ -631,10 +637,15 @@ export class McpManager {
         data = {};
       }
     }
-    return new McpOAuthProvider(data, this.callbackUrl, async (next) => {
-      r.oauthEnc = encryptSecret(JSON.stringify(next), this.cfg);
-      if (state.registered) await updateMcpServerOAuth(r.name, r.oauthEnc).catch(() => {});
-    });
+    return new McpOAuthProvider(
+      data,
+      this.callbackUrl,
+      async (next) => {
+        r.oauthEnc = encryptSecret(JSON.stringify(next), this.cfg);
+        if (state.registered) await updateMcpServerOAuth(r.name, r.oauthEnc).catch(() => {});
+      },
+      clientMetadataUrlFor(this.cfg.publicUrl),
+    );
   }
 
   /**
@@ -802,7 +813,7 @@ export class McpManager {
   }
 
   /**
-   * A 401 from a server that did not advertise OAuth, or rejected a token.
+   * A 401 from a server whose OAuth fastcar cannot use, or that rejected a token.
    * The SDK's own message here is a raw response body; say what to do instead.
    */
   private authErrorMessage(r: McpServerRecord, headers: Record<string, string>, err: unknown): string {
@@ -810,6 +821,17 @@ export class McpManager {
     const detail = raw?.trim() || "the server answered 401 Unauthorized";
     if (headers.Authorization || headers.authorization) {
       return `MCP server "${r.name}" rejected the Authorization header (${detail}). The token may be wrong, expired, or lack the required scope.`;
+    }
+    // It does offer OAuth — just not dynamic registration. The SDK only falls
+    // back to /register when it has no usable CIMD url, so that is the cause.
+    if (/dynamic client registration/i.test(detail)) {
+      return (
+        `MCP server "${r.name}" uses OAuth with URL-based client ids (Client ID Metadata Documents) ` +
+        `rather than dynamic client registration. fastcar supports that only when FASTCAR_PUBLIC_URL ` +
+        `is an https address the provider can reach (currently ${this.cfg.publicUrl}), with ` +
+        `${OAUTH_CLIENT_METADATA_PATH} publicly accessible. Alternatively, reinstall it with an ` +
+        `Authorization header if the provider issues API keys.`
+      );
     }
     return (
       `MCP server "${r.name}" requires authentication and does not advertise OAuth sign-in. ` +

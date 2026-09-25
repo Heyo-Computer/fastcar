@@ -15,11 +15,12 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
   artifacts: "Artifacts",
   mcp: "MCP",
   email: "Email",
+  signal: "Signal",
 };
 
 const CATEGORY_ORDER: ToolCategory[] = [
   "interaction", "web", "artifacts", "memory", "filesystem", "shell",
-  "delegation", "git", "mcp", "ops", "email",
+  "delegation", "git", "mcp", "ops", "email", "signal",
 ];
 
 const field =

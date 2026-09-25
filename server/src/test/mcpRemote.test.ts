@@ -353,3 +353,100 @@ describe("OAuth callback route", () => {
     assert.equal(res.statusCode, 403);
   });
 });
+
+/**
+ * Client ID Metadata Documents (CIMD), as Loops' MCP server requires: its
+ * authorization server has no /register, so fastcar's client_id is the https
+ * URL of a document fastcar serves. The fixture resolves that URL through the
+ * real route, so the document's shape is what is under test too.
+ */
+describe("OAuth with a URL-based client id (CIMD)", () => {
+  let manager: McpManager;
+  let app: ReturnType<typeof Fastify>;
+  let srv: RemoteMcp;
+  const names: string[] = [];
+  const CLIENT_ID = "https://fastcar.test/api/mcp/oauth/client-metadata.json";
+
+  before(async () => {
+    process.env.FASTCAR_MOCK = "1";
+    process.env.DATABASE_URL = DATABASE_URL;
+    await migrate();
+    const cfg = { ...loadConfig(), publicUrl: "https://fastcar.test" };
+    manager = new McpManager(cfg);
+    await manager.start();
+    app = Fastify();
+    registerRoutes(app, cfg, { artifacts: new ArtifactService(cfg), email: new EmailService(cfg), mcp: manager });
+    await app.ready();
+    srv = await startRemoteMcp({
+      oauth: true,
+      // Stands in for the authorization server fetching the client_id URL.
+      cimd: async (clientId) => {
+        const u = new URL(clientId);
+        if (u.origin !== "https://fastcar.test") return null;
+        const res = await app.inject({ method: "GET", url: u.pathname });
+        return res.statusCode === 200 ? res.json() : null;
+      },
+    });
+  });
+
+  after(async () => {
+    for (const n of names) await manager.remove(n).catch(() => {});
+    await manager.shutdown();
+    await app.close();
+    await srv.close();
+    await closePool();
+  });
+
+  it("serves a metadata document whose client_id is its own URL", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/mcp/oauth/client-metadata.json" });
+    assert.equal(res.statusCode, 200);
+    const doc = res.json();
+    assert.equal(doc.client_id, CLIENT_ID);
+    assert.deepEqual(doc.redirect_uris, ["https://fastcar.test/api/mcp/oauth/callback"]);
+    assert.equal(doc.token_endpoint_auth_method, "none");
+  });
+
+  it("signs in without dynamic registration", async () => {
+    const name = uniq("cimd");
+    names.push(name);
+    const pending = await manager.install({ source: `${srv.url}/mcp`, name });
+    assert.equal(pending.status, "needs_auth");
+    const authUrl = new URL(pending.authorizationUrl!);
+    assert.equal(authUrl.searchParams.get("client_id"), CLIENT_ID);
+    assert.ok(!srv.requests.some((r) => r.path === "/register"), "never tried to register");
+
+    const res = await fetch(authUrl, { redirect: "manual" });
+    assert.equal(res.status, 302, "the authorization server accepted the metadata document");
+    const callback = new URL(res.headers.get("location")!);
+    const done = await manager.completeAuthorization(
+      callback.searchParams.get("state")!,
+      callback.searchParams.get("code")!,
+    );
+    assert.equal(done.status, "connected");
+    assert.equal(await manager.callTool(name, "echo", { text: "c" }), "remote echo: c");
+  });
+
+  it("explains the https requirement instead of claiming there is no OAuth", async () => {
+    const httpCfg = { ...loadConfig(), publicUrl: "http://localhost:3000" };
+    const plain = new McpManager(httpCfg);
+    await plain.start();
+    try {
+      await assert.rejects(
+        () => plain.install({ source: `${srv.url}/mcp`, name: uniq("cimdhttp") }),
+        (err: Error) => {
+          assert.match(err.message, /Client ID Metadata Documents/);
+          assert.match(err.message, /FASTCAR_PUBLIC_URL/);
+          assert.doesNotMatch(err.message, /does not advertise OAuth/);
+          return true;
+        },
+      );
+    } finally {
+      await plain.shutdown();
+    }
+    const httpApp = Fastify();
+    registerRoutes(httpApp, httpCfg, { artifacts: new ArtifactService(httpCfg), email: new EmailService(httpCfg) });
+    const res = await httpApp.inject({ method: "GET", url: "/api/mcp/oauth/client-metadata.json" });
+    await httpApp.close();
+    assert.equal(res.statusCode, 404, "no document on a non-https deployment");
+  });
+});

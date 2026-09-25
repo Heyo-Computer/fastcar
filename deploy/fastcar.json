@@ -16,6 +16,7 @@
     ],
     "public_paths": [
       "/api/health",
+      "/api/mcp/oauth/client-metadata.json",
       "/artifacts/",
       "/pt/"
     ]

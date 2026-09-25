@@ -37,13 +37,19 @@ import { searchMentions } from "../services/mentions.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { COMMAND_SPECS } from "../threads/commands.js";
 import { listTools } from "../tools/registry.js";
-import { OAUTH_CALLBACK_PATH } from "../services/mcpOAuth.js";
+import {
+  OAUTH_CALLBACK_PATH,
+  OAUTH_CLIENT_METADATA_PATH,
+  clientMetadataUrlFor,
+  oauthClientMetadata,
+} from "../services/mcpOAuth.js";
 import type { ThreadManager } from "../threads/manager.js";
 import { callerFromRequest } from "./auth.js";
 import { loadPromptTemplates } from "../services/promptTemplates.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
+import type { SignalService } from "../services/signal.js";
 import type { AppSettings } from "../services/appSettings.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
 import { AgentValidationError, type AgentService } from "../services/agents.js";
@@ -68,6 +74,8 @@ export interface RouteDeps {
   models?: FastcarModels;
   /** Cron scheduler. Optional so narrow unit tests can omit it. */
   scheduler?: Scheduler;
+  /** Present only when SIGNAL_ACCOUNT is set. */
+  signal?: SignalService;
 }
 
 export function registerRoutes(
@@ -130,6 +138,21 @@ export function registerRoutes(
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  /**
+   * fastcar's Client ID Metadata Document: the authorization server (not a
+   * browser) fetches this to learn who `client_id` is. Public by necessity —
+   * see deploy/fastcar.json auth.public_paths — and it holds nothing secret:
+   * a name and the redirect URI. `client_id` must equal the URL it is served
+   * from, so it is 404 on a non-https deployment, where CIMD cannot work.
+   */
+  app.get(OAUTH_CLIENT_METADATA_PATH, async (_req, reply) => {
+    const clientId = clientMetadataUrlFor(cfg.publicUrl);
+    if (!clientId) return reply.code(404).send({ error: "FASTCAR_PUBLIC_URL is not https" });
+    return reply
+      .header("cache-control", "public, max-age=300")
+      .send({ client_id: clientId, ...oauthClientMetadata(`${cfg.publicUrl}${OAUTH_CALLBACK_PATH}`) });
   });
 
   /**
@@ -409,6 +432,7 @@ export function registerRoutes(
       email: Boolean(deps.email),
       artifacts: Boolean(deps.artifacts),
       mcp: Boolean(deps.mcp),
+      signal: Boolean(deps.signal),
     }),
   }));
 

@@ -58,6 +58,18 @@ export interface Config {
    * surfaced at boot, in the UI and in the agent's tool results.
    */
   publicUrlFromEnv: boolean;
+  /**
+   * signal-cli settings, present only when SIGNAL_ACCOUNT is set. Absent means
+   * Signal is off: no signal-cli process, and the signal_* tools are unavailable.
+   */
+  signal?: {
+    /** The account (E.164 number) signal-cli acts as. */
+    account: string;
+    /** signal-cli executable (SIGNAL_CLI_PATH); default `signal-cli` on PATH. */
+    cliPath: string;
+    /** signal-cli's --data-dir: the account's keys. Must persist, like dataDir. */
+    dataDir: string;
+  };
 }
 
 /**
@@ -116,6 +128,19 @@ function warnAboutPublicUrl(port: number): void {
     lines.push("Set it to the origin your browser uses, e.g. FASTCAR_PUBLIC_URL=https://fastcar.example.com");
   }
   console.warn(`\n⚠  ${lines.join("\n   ")}\n`);
+}
+
+function signalConfig(dataDir: string): Config["signal"] {
+  const account = env("SIGNAL_ACCOUNT");
+  if (!account) return undefined;
+  if (!/^\+[1-9]\d{5,14}$/.test(account)) {
+    throw new Error(`SIGNAL_ACCOUNT must be a phone number in international format, e.g. +15551234567 (got "${account}")`);
+  }
+  return {
+    account,
+    cliPath: env("SIGNAL_CLI_PATH") ?? "signal-cli",
+    dataDir: path.resolve(env("SIGNAL_DATA_DIR") ?? path.join(dataDir, "signal")),
+  };
 }
 
 export function loadConfig(): Config {
@@ -178,5 +203,6 @@ export function loadConfig(): Config {
     defaultOwner: env("FASTCAR_DEFAULT_OWNER") ?? null,
     publicUrl: (env("FASTCAR_PUBLIC_URL") ?? `http://localhost:${port}`).replace(/\/+$/, ""),
     publicUrlFromEnv: Boolean(env("FASTCAR_PUBLIC_URL")),
+    signal: signalConfig(dataDir),
   };
 }

@@ -35,6 +35,7 @@ import { getPromptTemplate, resolveTemplate } from "../services/promptTemplates.
 import { RateLimiter, postToWebhook, validateWebhookUrl } from "../services/webhook.js";
 import { WebhookTokenStore, generateTriggerToken } from "../services/webhookTokens.js";
 import type { EmailService } from "../services/emailService.js";
+import type { SignalService } from "../services/signal.js";
 import { artifactEvents, type ArtifactService } from "../services/artifacts.js";
 import { AgentService, agentEvents, type ResolvedAgent } from "../services/agents.js";
 import { findCommand, parseCommandLine, runCommand } from "./commands.js";
@@ -110,7 +111,7 @@ export class ThreadManager {
      * trailing options object so the three tests that construct a
      * ThreadManager with four positional args keep compiling.
      */
-    private readonly extra: { agents?: AgentService } = {},
+    private readonly extra: { agents?: AgentService; signal?: SignalService } = {},
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
     appSettingsEvents.on("changed", () => this.onSettingsChanged());
@@ -1108,6 +1109,7 @@ export class ThreadManager {
         email: this.email,
         artifacts: this.artifacts,
         mcp: this.mcp,
+        signal: this.extra.signal,
         sessionFile: rec?.piSessionFile ?? null,
         reasoningEffort: agent.reasoningEffort,
       });

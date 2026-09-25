@@ -163,6 +163,9 @@ recurses forever.
 | `FASTCAR_ENV_FILE` | Explicit env file to load instead of `.env` | unset |
 | `PORT` | HTTP port | `3000` |
 | `FASTCAR_PUBLIC_URL` | Externally reachable origin: the prefix of the public artifact URLs agents hand out, and of the OAuth redirect URI registered with remote MCP servers — so it must be the address your browser actually uses | `http://localhost:$PORT` |
+| `SIGNAL_ACCOUNT` | Signal account (international format, `+15551234567`) the `signal_*` tools act as. Unset = Signal off | unset |
+| `SIGNAL_CLI_PATH` | signal-cli executable | `signal-cli` on `PATH` |
+| `SIGNAL_DATA_DIR` | signal-cli's `--data-dir`, holding the account's keys — keep it on persistent storage | `<data dir>/signal` |
 
 ## Using it
 
@@ -275,8 +278,14 @@ recurses forever.
       SSE stream.
     - **OAuth**: leave the headers empty. A server that follows the MCP
       authorization spec answers 401 and points at its authorization server;
-      fastcar discovers it, registers itself as a client, and gives you a
-      **Sign in** link. The install isn't finished, and nothing is registered,
+      fastcar discovers it, identifies itself as a client, and gives you a
+      **Sign in** link. It identifies itself either by dynamic client
+      registration or, when the authorization server supports Client ID
+      Metadata Documents (Loops, for one, supports nothing else), by using the
+      URL of `/api/mcp/oauth/client-metadata.json` as its client id. That one
+      needs `FASTCAR_PUBLIC_URL` to be `https://` and the path to be reachable
+      by the provider, so it is in `auth.public_paths`; on plain-http or
+      localhost setups those servers can't be connected via OAuth. The install isn't finished, and nothing is registered,
       until you complete the sign-in and the server answers `tools/list`. The
       provider redirects back to `/api/mcp/oauth/callback`, which is behind
       the normal sign-in gate (it is *not* in `auth.public_paths`) and is
@@ -284,8 +293,8 @@ recurses forever.
       If the provider revokes them, the server shows **needs sign-in** and ↻
       starts a new one. An agent that installs an OAuth server gets the link in
       the tool result and passes it to you, since it can't open a browser.
-    - A 401 from a server that offers no OAuth says so plainly and asks for a
-      key, rather than surfacing the raw response.
+    - A 401 from a server whose OAuth fastcar can't use says why and what to
+      change, rather than surfacing the raw response.
   - **Code to run locally** — a GitHub URL such as
     `https://github.com/Heyo-Computer/heyo-public/tree/main/mcp` (branch and
     subdirectory are read from the URL) or any git URL. It is cloned into
@@ -328,5 +337,59 @@ recurses forever.
   `?raw=1` returns the source), built into a full link from
   `FASTCAR_PUBLIC_URL`. Behind app-lb, `deploy/fastcar.json` lists `/artifacts/`
   in `auth.public_paths` so the links work for anyone who has them.
+- **Signal** — with a linked account (see [Signal](#signal) below), agents
+  talk on Signal threads: `signal_threads` lists conversations with unread
+  counts, plus groups and contacts; `signal_read` shows a thread's recent
+  messages; `signal_send` sends a message, optionally quote-replying
+  (`reply_to`) or attaching workspace files. A thread is a phone number, a
+  group id (`group:…`), or the exact name of a contact or group. The loop that
+  makes it a conversation is `signal_send`, then `signal_read` with
+  `wait_seconds` (up to 600): it returns as soon as someone answers, meaning
+  a message newer than the agent's last one and anything it was already
+  shown. `signal_send` reaches real people, so it is blocked in plan mode.
+  The built-in Conductor holds all three whenever Signal is configured; other
+  agents get them from the builder's Signal group.
 - While the agent is running, sending a message **steers** it; ◼ Stop aborts
   (cascading into any running subagents).
+
+## Signal
+
+The integration drives [signal-cli](https://github.com/AsamK/signal-cli)
+(tested with 0.14.8). fastcar runs `signal-cli -a $SIGNAL_ACCOUNT jsonRpc` as
+a child process: calls go over its stdin/stdout JSON-RPC, and it receives
+continuously, pushing each incoming message to fastcar. signal-cli keeps no
+message history of its own, so fastcar stores every message it sees in
+Postgres (`signal_messages`). That table is what `signal_read` reads, which
+means history starts the first time fastcar listens on the account.
+
+1. **Install signal-cli.** The `Linux-native` release is a single binary that
+   needs no Java; put it on `PATH` or point `SIGNAL_CLI_PATH` at it.
+2. **Link the account** before setting `SIGNAL_ACCOUNT`, while fastcar isn't
+   running signal-cli against that data dir:
+
+   ```sh
+   signal-cli --data-dir .fastcar/signal link -n fastcar
+   ```
+
+   Render the `sgnl://linkdevice…` URI it prints as a QR code (e.g.
+   `qrencode -t ansiutf8 '<uri>'`) and scan it from the phone under
+   Signal → Settings → Linked devices. Use a dedicated number if agents
+   should appear as someone other than you. If you link your personal
+   account, agents send as you, and **Note to Self** becomes a private
+   channel to them: what you type there on your phone counts as an incoming
+   message.
+3. **Set `SIGNAL_ACCOUNT`** (and `SIGNAL_DATA_DIR`, if you linked into another
+   directory), then restart. Until the account is linked, signal-cli exits
+   immediately. fastcar logs the reason once, fails Signal tool calls with the
+   linking instructions, and retries on a backoff of up to a minute, so it
+   comes up on its own once the link is done.
+
+Only one process may use a data dir at a time: stop fastcar before running
+other signal-cli commands against it. To try the tools without an account,
+point `SIGNAL_CLI_PATH` at the fake in
+`server/src/test/fixtures/fake-signal-cli/signal-cli.mjs`. It reads contacts
+and groups from `$SIGNAL_DATA_DIR/fake-state.json` (format in its header),
+and echoes direct messages back as replies. In mock mode, prompting
+`send a signal message to +15550000001: hi` makes the agent send, then wait
+for the echo. `FASTCAR_SMOKE_SIGNAL_TO=<that number> npm run smoke:ws` runs
+the same flow against a server set up this way.

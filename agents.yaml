@@ -71,3 +71,77 @@ tools:
       truncated:
         type: boolean
         description: Whether stdout/stderr was truncated to its tail.
+  signal_threads:
+    description: |
+      List Signal conversations on the linked signal-cli account: stored
+      threads with unread counts and the last message, groups the account is
+      in, and (with a query) matching contacts. Available when SIGNAL_ACCOUNT
+      is set.
+    input:
+      query:
+        type: string
+        required: false
+        description: Case-insensitive filter on name, number or id; also searches contacts.
+      limit:
+        type: integer
+        required: false
+        description: Most threads to list (default 20, max 100).
+    output:
+      text:
+        type: string
+        description: One line per thread, each with the id to pass as `thread`.
+  signal_read:
+    description: |
+      Read a Signal thread's latest messages, oldest first, each with its
+      timestamp id. With wait_seconds, block until someone replies — a message
+      newer than the agent's last one and anything it was already shown.
+    input:
+      thread:
+        type: string
+        description: Phone number (+15551234567), uuid, group id (group:…), or an exact contact/group name.
+      limit:
+        type: integer
+        required: false
+        description: Most recent messages to show (default 20, max 100).
+      wait_seconds:
+        type: integer
+        required: false
+        description: Wait up to this long for a reply (0-600, default 0).
+    output:
+      text:
+        type: string
+        description: The messages, plus whether a reply arrived when waiting.
+      wait:
+        type: string
+        description: replied | timeout | aborted, or null when not waiting.
+  signal_send:
+    description: |
+      Send a Signal message to a person or group. Mutating — blocked in plan
+      mode, since it reaches real people and cannot be unsent.
+    input:
+      thread:
+        type: string
+        description: Phone number, uuid, group id (group:…), or an exact contact/group name.
+      message:
+        type: string
+        description: Message text; may be empty only when sending attachments.
+      reply_to:
+        type: integer
+        required: false
+        description: Timestamp id of a message in the thread to quote-reply to.
+      attachments:
+        type: array
+        items:
+          type: string
+        required: false
+        description: Files to attach, absolute or relative to the workspace.
+    output:
+      timestamp:
+        type: integer
+        description: The sent message's Signal timestamp (its id for replies).
+      delivered:
+        type: integer
+        description: Recipients it reached (group members, or 1).
+      failures:
+        type: array
+        description: Recipients Signal refused, with the failure type.

@@ -61,12 +61,17 @@ meant to be opened by anyone without signing in. The app serves that prefix
 with no auth of its own (ids are UUIDs; the URL is the capability), so the
 only thing standing between a link and the world is app-lb's sign-in gate.
 The spec's `auth.public_paths` therefore lists `/artifacts/` (and
-`/api/health` for the pool's health checks) so the gate skips them; everything
-else, `/api/*` and the UI included, stays behind Google sign-in. If you manage
-the gate with `heyctl set auth` instead of the spec, add the same prefix:
+`/api/health` for the pool's health checks) so the gate skips them, along with
+`/pt/` (prompt triggers) and `/api/mcp/oauth/client-metadata.json` — fastcar's
+OAuth client metadata document, which MCP authorization servers such as Loops
+fetch server-to-server to identify fastcar (it holds only a name and the
+redirect URI). Everything else, `/api/*` and the UI included, stays behind
+Google sign-in. If you manage the gate with `heyctl set auth` instead of the
+spec, add the same prefixes:
 
 ```sh
-heyctl set auth fastcar --public-path /api/health --public-path /artifacts/
+heyctl set auth fastcar --public-path /api/health --public-path /artifacts/ \
+  --public-path /pt/ --public-path /api/mcp/oauth/client-metadata.json
 ```
 
 `FASTCAR_PUBLIC_URL` must be the origin the browser uses (`https://` + the
@@ -187,6 +192,17 @@ back to grep.
 ```sh
 serverctl exec fastcar -- sh -c 'cd /workspace/repos/<name> && codegraph --text search <symbol>'
 ```
+
+Signal inside the VM: the image does not ship signal-cli, because the native
+binary is ~370 MB and every rootfs byte is paid on each cold boot (see the
+Dockerfile). Put it on the data disk instead, where it persists, and point the
+deployment at it with `vm.env_vars`: `SIGNAL_CLI_PATH=/workspace/bin/signal-cli`
+and `SIGNAL_ACCOUNT=+1…`. The account's keys default to
+`/workspace/fastcar/signal`. Link it from a shell in the guest (`serverctl
+shell fastcar`, then `signal-cli --data-dir /workspace/fastcar/signal link -n
+fastcar`) before setting `SIGNAL_ACCOUNT`. With `vm.workspace`, those keys
+travel in the workspace snapshot and the store. Run a single replica: two VMs
+using the same linked device at once corrupt its Signal sessions.
 
 Git auth inside the VM: the agent's `git_clone`/`git_push` use whatever
 credentials exist in the guest — embed a token in the https URL when adding a
