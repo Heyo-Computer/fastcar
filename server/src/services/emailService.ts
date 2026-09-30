@@ -415,10 +415,16 @@ export class EmailService {
     }
     const password = decrypt(s.passwordEnc, this.cfg);
     if (this.opts.transportFactory) return this.opts.transportFactory(s, password);
+    // Only 465 speaks implicit TLS; 587/25 greet in plaintext and upgrade via
+    // STARTTLS. Taking the checkbox literally on those ports makes the TLS
+    // handshake read the "220" banner ("wrong version number"), so there
+    // "secure" means require STARTTLS instead.
+    const implicitTls = s.secure && s.port === 465;
     return nodemailer.createTransport({
       host: s.host,
       port: s.port,
-      secure: s.secure,
+      secure: implicitTls,
+      requireTLS: s.secure && !implicitTls,
       auth: password || s.username ? { user: s.username, pass: password } : undefined,
     });
   }
