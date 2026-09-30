@@ -17,13 +17,15 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.js";
 import type { SubagentManager } from "../pi/subagents.js";
 import type { ArtifactService } from "../services/artifacts.js";
+import type { BrowserSessions } from "../services/browserSessions.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
 import type { SignalService } from "../services/signal.js";
 import { createArtifactTools } from "./artifacts.js";
 import { createAskUserTool, type AskUserBridge } from "./askUser.js";
+import { createBrowserTools } from "./browser.js";
 import { createBrowserCheckTool } from "./browserCheck.js";
-import { createEmailTool } from "./email.js";
+import { createEmailTools } from "./email.js";
 import { createGitTools } from "./git.js";
 import { createHeyctlTools } from "./heyctl.js";
 import { createMcpTools } from "./mcp.js";
@@ -48,7 +50,8 @@ export type ToolCategory =
   | "signal";
 
 /** Which optional dependency a tool's factory needs from the ToolContext. */
-export type ToolDep = "subagents" | "ask" | "plan" | "email" | "artifacts" | "mcp" | "signal";
+export type ToolDep =
+  | "subagents" | "ask" | "plan" | "email" | "email_inbox" | "artifacts" | "mcp" | "signal" | "browser";
 
 export interface ToolDef {
   name: string;
@@ -88,6 +91,7 @@ type ToolGroup =
   | "memory"
   | "web"
   | "browser"
+  | "browser_session"
   | "email"
   | "git"
   | "heyctl"
@@ -109,6 +113,8 @@ export interface ToolContext {
   /** MCP servers this agent may reach; undefined means all installed. */
   allowedMcpServers?: string[];
   signal?: SignalService;
+  /** Persistent per-thread browser sessions for the browser_* tools. */
+  browsers?: BrowserSessions;
 }
 
 const GROUP_FACTORIES: Record<ToolGroup, (ctx: ToolContext) => ToolDefinition[]> = {
@@ -118,7 +124,8 @@ const GROUP_FACTORIES: Record<ToolGroup, (ctx: ToolContext) => ToolDefinition[]>
   memory: (c) => createMemoryTools(c.threadId),
   web: (c) => [createWebSearchTool(c.cfg)],
   browser: (c) => [createBrowserCheckTool(c.cfg)],
-  email: (c) => [createEmailTool(c.email!)],
+  browser_session: (c) => createBrowserTools(c.browsers!, c.threadId, c.cfg.workdir),
+  email: (c) => createEmailTools(c.email!),
   git: (c) => createGitTools(c.cfg),
   heyctl: () => createHeyctlTools(),
   artifacts: (c) => createArtifactTools(c.artifacts!, c.threadId),
@@ -137,14 +144,21 @@ function depSatisfied(def: ToolDef, ctx: ToolContext): boolean {
       return Boolean(ctx.askBridge);
     case "plan":
       return Boolean(ctx.planBridge);
+    // Configured state, not mere presence: EmailService always exists, and an
+    // agent offered a tool that can only fail learns nothing from it. Sessions
+    // are rebuilt when the settings change (ThreadManager.markAllSessionsStale).
     case "email":
-      return Boolean(ctx.email);
+      return Boolean(ctx.email?.smtpConfigured());
+    case "email_inbox":
+      return Boolean(ctx.email?.imapConfigured());
     case "artifacts":
       return Boolean(ctx.artifacts);
     case "mcp":
       return Boolean(ctx.mcp);
     case "signal":
       return Boolean(ctx.signal);
+    case "browser":
+      return Boolean(ctx.browsers?.available());
   }
 }
 
@@ -227,17 +241,23 @@ export const TOOLS: readonly ToolDef[] = [
     group: "browser",
   },
 
+  // ---- Browser sessions ------------------------------------------------------
+  // A persistent headless browser per thread. Only acting on a page can
+  // change anything (it submits forms), so plan mode keeps read-only browsing.
+  w("browser_open", "Open web page", "Load a URL in a persistent headless browser session.", false),
+  w("browser_snapshot", "Snapshot page", "Read the page as an accessibility tree with element refs.", false),
+  w("browser_act", "Act on page", "Click, type, select and submit on a page — fills forms.", true),
+  w("browser_extract", "Extract from page", "Pull text, links, tables or form fields from a page.", false),
+  w("browser_screenshot", "Screenshot page", "Save a PNG of the current page.", false),
+  w("browser_tabs", "Browser tabs", "List, switch or close browser tabs.", false),
+  w("browser_close", "Close browser", "End the browser session and forget its cookies.", false),
+
   // ---- Email ---------------------------------------------------------------
-  {
-    name: "email",
-    label: "Send email",
-    description: "Send an email through the configured SMTP server.",
-    category: "email",
-    builtin: false,
-    mutating: false,
-    requires: "email",
-    group: "email",
-  },
+  // Sending reaches real people, so it is blocked in plan mode; reading only
+  // touches fastcar's copy of the mailbox.
+  e("email_list", "List email", "List email threads with unread counts.", false, "email_inbox"),
+  e("email_read", "Read email", "Read an email thread, optionally waiting for new mail.", false, "email_inbox"),
+  e("email_send", "Send email", "Send an email or a threaded reply over SMTP.", true, "email"),
 
   // ---- Signal --------------------------------------------------------------
   // Sending reaches real people, so it is blocked in plan mode; reading and
@@ -303,6 +323,15 @@ function a(name: string, label: string, description: string, mutating: boolean):
     name, label, description, category: "artifacts",
     builtin: false, mutating, requires: "artifacts", group: "artifacts",
   };
+}
+function w(name: string, label: string, description: string, mutating: boolean): ToolDef {
+  return {
+    name, label, description, category: "web",
+    builtin: false, mutating, requires: "browser", group: "browser_session",
+  };
+}
+function e(name: string, label: string, description: string, mutating: boolean, requires: ToolDep): ToolDef {
+  return { name, label, description, category: "email", builtin: false, mutating, requires, group: "email" };
 }
 function s(name: string, label: string, description: string, mutating: boolean): ToolDef {
   return {
@@ -408,7 +437,12 @@ export interface ToolInfoRow {
  * view they are always available.
  */
 export interface ServerCapabilities {
+  /** SMTP is configured. */
   email: boolean;
+  /** IMAP is configured. */
+  emailInbox: boolean;
+  /** A Chromium binary exists. */
+  browser: boolean;
   artifacts: boolean;
   mcp: boolean;
   signal: boolean;
@@ -416,6 +450,8 @@ export interface ServerCapabilities {
 
 const DEP_REASON: Partial<Record<ToolDep, string>> = {
   email: "no SMTP server is configured",
+  email_inbox: "no IMAP server is configured (Settings → Email)",
+  browser: "no Chromium binary found (install chromium or set FASTCAR_CHROMIUM_PATH)",
   artifacts: "the artifact store is not available",
   mcp: "the MCP registry is not available",
   signal: "Signal is not configured (set SIGNAL_ACCOUNT)",
@@ -425,7 +461,11 @@ export function listTools(caps: ServerCapabilities): ToolInfoRow[] {
   return TOOLS.map((t) => {
     const dep = t.requires;
     const available =
-      dep === "email" || dep === "artifacts" || dep === "mcp" || dep === "signal" ? caps[dep] : true;
+      dep === "email" || dep === "artifacts" || dep === "mcp" || dep === "signal" || dep === "browser"
+        ? caps[dep]
+        : dep === "email_inbox"
+          ? caps.emailInbox
+          : true;
     return {
       name: t.name,
       label: t.label,
@@ -446,21 +486,27 @@ export function listTools(caps: ServerCapabilities): ToolInfoRow[] {
 /**
  * The conductor's allowlist, moved verbatim from conductor.ts (order included)
  * so the seeded builtin agent grants exactly what it granted before, plus the
- * signal_* tools added since (last, so the old prefix is untouched). Tools
- * whose dependency is absent are dropped by buildToolset, which is what the
+ * tools added since (appended, so the old prefix is untouched). The one
+ * in-place change is `email` → `email_send`, a rename when email learned to
+ * read (migration 011 renames it in stored agents too). Tools whose
+ * dependency is absent are dropped by buildToolset, which is what the
  * conditional spreads in conductor.ts used to do by hand.
  */
 export const CONDUCTOR_DEFAULT_TOOLS: readonly string[] = [
   "read", "bash", "edit", "write", "grep", "find", "ls",
   "run_subagent", "ask_user", "submit_plan",
   "memory_save", "memory_search", "memory_list", "memory_delete",
-  "web_search", "browser_check", "email",
+  "web_search", "browser_check", "email_send",
   ...namesInGroup("git"),
   "heyctl",
   ...namesInGroup("artifacts"),
   ...namesInGroup("mcp"),
   // Dropped by buildToolset unless SIGNAL_ACCOUNT is set.
   ...namesInGroup("signal"),
+  // Dropped unless IMAP is configured.
+  "email_list", "email_read",
+  // Dropped when no Chromium is installed.
+  ...namesInGroup("browser_session"),
 ];
 
 /** Read-only git, derived rather than hand-listed: git_status + git_list_repos. */

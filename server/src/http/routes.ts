@@ -50,6 +50,7 @@ import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { McpManager } from "../services/mcp.js";
 import type { SignalService } from "../services/signal.js";
+import type { BrowserSessions } from "../services/browserSessions.js";
 import type { AppSettings } from "../services/appSettings.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
 import { AgentValidationError, type AgentService } from "../services/agents.js";
@@ -76,6 +77,8 @@ export interface RouteDeps {
   scheduler?: Scheduler;
   /** Present only when SIGNAL_ACCOUNT is set. */
   signal?: SignalService;
+  /** Browser sessions for the browser_* tools; absent in narrow unit tests. */
+  browsers?: BrowserSessions;
 }
 
 export function registerRoutes(
@@ -429,7 +432,9 @@ export function registerRoutes(
 
   app.get("/api/tools", async () => ({
     tools: listTools({
-      email: Boolean(deps.email),
+      email: deps.email.smtpConfigured(),
+      emailInbox: deps.email.imapConfigured(),
+      browser: Boolean(deps.browsers?.available()),
       artifacts: Boolean(deps.artifacts),
       mcp: Boolean(deps.mcp),
       signal: Boolean(deps.signal),
@@ -664,7 +669,10 @@ export function registerRoutes(
     if (!body || !body.host || !body.fromAddress) {
       return reply.code(400).send({ error: "host and fromAddress are required" });
     }
-    return deps.email.saveSettings(body);
+    const saved = deps.email.saveSettings(body);
+    // Whether the email_* tools are offered at all depends on these settings.
+    deps.manager?.markAllSessionsStale();
+    return saved;
   });
 }
 

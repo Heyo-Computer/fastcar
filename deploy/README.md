@@ -66,13 +66,15 @@ The spec's `auth.public_paths` therefore lists `/artifacts/` (and
 OAuth client metadata document, which MCP authorization servers such as Loops
 fetch server-to-server to identify fastcar (it holds only a name and the
 redirect URI). Everything else, `/api/*` and the UI included, stays behind
-Google sign-in. If you manage the gate with `heyctl set auth` instead of the
-spec, add the same prefixes:
+Google sign-in.
 
-```sh
-heyctl set auth fastcar --public-path /api/health --public-path /artifacts/ \
-  --public-path /pt/ --public-path /api/mcp/oauth/client-metadata.json
-```
+Each entry is written as `{"path": …, "scope": "public"}`. A bare string means
+the path skips Google sign-in but still needs an **admin** app-token — app-lb
+reads an unqualified path fail-closed — so an OAuth provider fetching the
+metadata document would get a 401. `heyctl set auth --public-path` sends bare
+strings, so it cannot open a path; change the live gate by editing the spec's
+`auth.public_paths` and `heyctl apply -f` (or `heyctl edit fastcar`), and check
+the result with `heyctl describe fastcar`, which prints each path's scope.
 
 `FASTCAR_PUBLIC_URL` must be the origin the browser uses (`https://` + the
 route host). Every public link is built from it: artifact URLs the agent pastes

@@ -15,10 +15,10 @@
       "REPLACE_ME_WORKSPACE_DOMAIN"
     ],
     "public_paths": [
-      "/api/health",
-      "/api/mcp/oauth/client-metadata.json",
-      "/artifacts/",
-      "/pt/"
+      { "path": "/api/health", "scope": "public" },
+      { "path": "/api/mcp/oauth/client-metadata.json", "scope": "public" },
+      { "path": "/artifacts/", "scope": "public" },
+      { "path": "/pt/", "scope": "public" }
     ]
   },
   "vm": {

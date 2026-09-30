@@ -16,6 +16,7 @@ import { buildToolset, CONDITIONAL_PLAN_TOOLS, isMutating } from "../tools/regis
 import type { McpManager } from "../services/mcp.js";
 import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
+import type { BrowserSessions } from "../services/browserSessions.js";
 import type { SignalService } from "../services/signal.js";
 import { composeAgentPrompt } from "./prompts.js";
 import {
@@ -41,7 +42,7 @@ export interface AgentSessionDeps {
   askBridge: AskUserBridge;
   planBridge: SubmitPlanBridge;
   onSubagentEvent: SubagentEventSink;
-  /** Email service for the `email` agent tool (Feature 2). Optional in dev/smoke. */
+  /** Email service for the email_* agent tools. Optional in dev/smoke. */
   email?: EmailService;
   /** Artifact store for the create/update/list_artifacts tools. Optional in dev/smoke. */
   artifacts?: ArtifactService;
@@ -49,6 +50,8 @@ export interface AgentSessionDeps {
   mcp?: McpManager;
   /** signal-cli bridge for the signal_* tools. Absent unless SIGNAL_ACCOUNT is set. */
   signal?: SignalService;
+  /** Per-thread headless browser sessions for the browser_* tools. */
+  browsers?: BrowserSessions;
   /** Existing Pi JSONL session file to resume, or null for a fresh session. */
   sessionFile: string | null;
   /** Effort for this session's turns, already resolved (agent pin > ⚙ > env). */
@@ -105,6 +108,7 @@ export async function createManagedSession(deps: AgentSessionDeps): Promise<Agen
     mcp: deps.mcp,
     allowedMcpServers: agent.mcpServers ?? undefined,
     signal: deps.signal,
+    browsers: deps.browsers,
   });
 
   const { session } = await createAgentSession({

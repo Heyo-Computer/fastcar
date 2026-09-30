@@ -17,6 +17,7 @@ import { registerPublicArtifactRoutes } from "./http/publicArtifacts.js";
 import { registerPublicPromptTriggerRoutes } from "./http/publicPromptTrigger.js";
 import { registerWs } from "./ws/handler.js";
 import { ArtifactService } from "./services/artifacts.js";
+import { BrowserSessions } from "./services/browserSessions.js";
 import { EmailService } from "./services/emailService.js";
 import { AppSettings } from "./services/appSettings.js";
 import { SubagentSettings } from "./services/subagentSettings.js";
@@ -41,6 +42,8 @@ const subagentSettings = new SubagentSettings(cfg);
 const subagents = new SubagentManager(models, cfg, mcp, subagentSettings);
 const artifacts = new ArtifactService(cfg);
 const email = new EmailService(cfg);
+// Chromium launches on the first browser_* call, not here.
+const browsers = new BrowserSessions(cfg);
 const settings = new AppSettings(cfg);
 const agents = new AgentService(cfg, settings, mcp);
 // Undefined unless SIGNAL_ACCOUNT is set; the signal_* tools are dropped then.
@@ -51,6 +54,7 @@ const signalService = SignalService.fromConfig(cfg);
 const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp, settings, {
   agents,
   signal: signalService,
+  browsers,
 });
 const scheduler = new Scheduler(manager, agents, new WebhookTokenStore(cfg));
 manager.attachScheduler(scheduler);
@@ -58,6 +62,8 @@ manager.attachScheduler(scheduler);
 await mcp.start();
 // signal-cli receives from here on; an unlinked account retries on a backoff.
 signalService?.start();
+// Copies the IMAP inbox into email_messages; a no-op until IMAP is configured.
+email.start();
 // Unwedges schedules left mid-run by a previous process, then starts ticking.
 await scheduler.start();
 // Registers repos an agent cloned with raw `git clone` before this process started.
@@ -70,6 +76,7 @@ await app.register(fastifyMultipart);
 registerRoutes(app, cfg, {
   artifacts, email, mcp, settings, subagentSettings, manager, agents, models, scheduler,
   signal: signalService,
+  browsers,
 });
 // Public, unauthenticated artifact pages (see deploy/fastcar.json auth.public_paths).
 registerPublicArtifactRoutes(app, artifacts);
@@ -98,6 +105,7 @@ async function shutdown(signal: string): Promise<void> {
   await manager.shutdown().catch(() => {});
   await mcp.shutdown().catch(() => {});
   await signalService?.stop().catch(() => {});
+  await email.stop().catch(() => {});
   await app.close().catch(() => {});
   mockServer?.close();
   await closePool().catch(() => {});

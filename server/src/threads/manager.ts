@@ -35,6 +35,7 @@ import { getPromptTemplate, resolveTemplate } from "../services/promptTemplates.
 import { RateLimiter, postToWebhook, validateWebhookUrl } from "../services/webhook.js";
 import { WebhookTokenStore, generateTriggerToken } from "../services/webhookTokens.js";
 import type { EmailService } from "../services/emailService.js";
+import type { BrowserSessions } from "../services/browserSessions.js";
 import type { SignalService } from "../services/signal.js";
 import { artifactEvents, type ArtifactService } from "../services/artifacts.js";
 import { AgentService, agentEvents, type ResolvedAgent } from "../services/agents.js";
@@ -111,7 +112,7 @@ export class ThreadManager {
      * trailing options object so the three tests that construct a
      * ThreadManager with four positional args keep compiling.
      */
-    private readonly extra: { agents?: AgentService; signal?: SignalService } = {},
+    private readonly extra: { agents?: AgentService; signal?: SignalService; browsers?: BrowserSessions } = {},
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
     appSettingsEvents.on("changed", () => this.onSettingsChanged());
@@ -653,6 +654,7 @@ export class ThreadManager {
 
     await threadsDb.deleteThread(threadId);
     this.removeSessionFile(rec.piSessionFile);
+    await this.extra.browsers?.close(threadId);
     // Drop both the webhook bearer token and the public trigger token so a
     // stale capability URL can no longer fire the (now-deleted) thread.
     this.webhookTokens.delete(threadId);
@@ -1110,6 +1112,7 @@ export class ThreadManager {
         artifacts: this.artifacts,
         mcp: this.mcp,
         signal: this.extra.signal,
+        browsers: this.extra.browsers,
         sessionFile: rec?.piSessionFile ?? null,
         reasoningEffort: agent.reasoningEffort,
       });
@@ -1341,6 +1344,19 @@ export class ThreadManager {
       await this.flushStaged(rt);
     }
     this.runtimes.clear();
+    await this.extra.browsers?.shutdown();
+  }
+
+  /**
+   * Rebuild every live session on its next turn. For server-wide changes
+   * that alter which tools resolve — email settings decide whether the
+   * email_* tools are offered at all. The browser session, like the thread's
+   * history, survives the rebuild.
+   */
+  markAllSessionsStale(): void {
+    for (const rt of this.runtimes.values()) {
+      if (rt.conductor) rt.staleSession = true;
+    }
   }
 }
 
