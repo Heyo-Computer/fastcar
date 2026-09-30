@@ -279,7 +279,7 @@ export function SettingsModal() {
           onChange={(e) => setSecure(e.target.checked)}
           className="accent-[var(--color-accent)]"
         />
-        Use TLS/SSL (implicit TLS on the port above)
+        Require TLS (implicit on 465, STARTTLS on other ports)
       </label>
 
       <SectionTitle>Incoming mail (IMAP)</SectionTitle>
