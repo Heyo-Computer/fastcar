@@ -45,6 +45,14 @@ export function SettingsModal() {
   const [fromAddress, setFromAddress] = useState("");
   const [secure, setSecure] = useState(false);
   const [configured, setConfigured] = useState(false);
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState(993);
+  const [imapSecure, setImapSecure] = useState(true);
+  const [imapMailbox, setImapMailbox] = useState("INBOX");
+  const [imapUsername, setImapUsername] = useState("");
+  const [imapPassword, setImapPassword] = useState("");
+  const [imapConfigured, setImapConfigured] = useState(false);
+  const [imapStatus, setImapStatus] = useState<SmtpSettingsResponse["imapStatus"] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -93,6 +101,16 @@ export function SettingsModal() {
     }
   };
 
+  const applyImap = (data: SmtpSettingsResponse) => {
+    setImapHost(data.imapHost);
+    setImapPort(data.imapPort);
+    setImapSecure(data.imapSecure);
+    setImapMailbox(data.imapMailbox);
+    setImapUsername(data.imapUsername);
+    setImapConfigured(data.imapConfigured);
+    setImapStatus(data.imapStatus);
+  };
+
   const load = async () => {
     try {
       const res = await fetch("/api/smtp");
@@ -109,6 +127,7 @@ export function SettingsModal() {
       setFromAddress(data.fromAddress);
       setSecure(data.secure);
       setConfigured(data.configured);
+      applyImap(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -129,6 +148,12 @@ export function SettingsModal() {
           password: password || undefined,
           fromAddress: fromAddress.trim(),
           secure,
+          imapHost: imapHost.trim(),
+          imapPort: Number(imapPort) || 993,
+          imapSecure,
+          imapMailbox: imapMailbox.trim() || "INBOX",
+          imapUsername: imapUsername.trim(),
+          imapPassword: imapPassword || undefined,
         }),
       });
       if (!res.ok) {
@@ -137,7 +162,9 @@ export function SettingsModal() {
       }
       const data = (await res.json()) as SmtpSettingsResponse;
       setConfigured(data.configured);
+      applyImap(data);
       setPassword("");
+      setImapPassword("");
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -255,6 +282,68 @@ export function SettingsModal() {
         Use TLS/SSL (implicit TLS on the port above)
       </label>
 
+      <SectionTitle>Incoming mail (IMAP)</SectionTitle>
+      <p className="text-[0.72rem] text-ink-faint">
+        Lets agents read the mailbox and wait for replies (email_list / email_read). Leave the host
+        blank to keep email send-only. Username and password default to the SMTP login; Gmail,
+        iCloud and Outlook need an app password.
+        {imapConfigured && imapStatus ? ` ${imapStatusText(imapStatus)}` : ""}
+      </p>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="IMAP Host" className="col-span-2">
+          <input
+            value={imapHost}
+            onChange={(e) => setImapHost(e.target.value)}
+            placeholder="imap.example.com"
+            className="w-full rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent/60"
+          />
+        </Field>
+        <Field label="Port">
+          <input
+            type="number"
+            value={imapPort}
+            onChange={(e) => setImapPort(Number(e.target.value))}
+            className="w-full rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent/60"
+          />
+        </Field>
+        <Field label="Mailbox">
+          <input
+            value={imapMailbox}
+            onChange={(e) => setImapMailbox(e.target.value)}
+            placeholder="INBOX"
+            className="w-full rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent/60"
+          />
+        </Field>
+        <Field label="Username (optional)">
+          <input
+            value={imapUsername}
+            onChange={(e) => setImapUsername(e.target.value)}
+            placeholder="same as SMTP"
+            className="w-full rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent/60"
+          />
+        </Field>
+        <Field label="Password (optional)">
+          <input
+            type="password"
+            value={imapPassword}
+            onChange={(e) => setImapPassword(e.target.value)}
+            placeholder="same as SMTP / keep"
+            className="w-full rounded-lg border border-border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-accent/60"
+          />
+        </Field>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm text-ink-dim">
+        <input
+          type="checkbox"
+          checked={imapSecure}
+          onChange={(e) => setImapSecure(e.target.checked)}
+          className="accent-[var(--color-accent)]"
+        />
+        Use TLS (port 993)
+      </label>
+
       <div className="rounded-lg border border-border bg-panel-2/60 px-3 py-2 text-[0.72rem] text-ink-faint">
         <p>
           Send a test email with the structured slash command:{" "}
@@ -284,7 +373,7 @@ export function SettingsModal() {
           disabled={busy}
           className="rounded-lg border border-accent-dim/50 bg-accent-dim/20 px-4 py-1.5 text-sm text-accent hover:bg-accent-dim/30 disabled:opacity-40"
         >
-          {busy ? "Saving…" : "Save SMTP"}
+          {busy ? "Saving…" : "Save email settings"}
         </button>
       </div>
     </>
@@ -344,4 +433,12 @@ function Field({
       <div className="mt-1">{children}</div>
     </label>
   );
+}
+
+function imapStatusText(st: SmtpSettingsResponse["imapStatus"]): string {
+  if (st.state === "down") return `⚠ Inbox sync failing: ${st.error ?? "unknown error"}`;
+  if (st.state === "running") {
+    return st.lastSyncAt ? `✓ Inbox syncing (last ${new Date(st.lastSyncAt).toLocaleTimeString()}).` : "✓ Inbox connected.";
+  }
+  return "Inbox sync is not running.";
 }

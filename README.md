@@ -349,6 +349,28 @@ recurses forever.
   shown. `signal_send` reaches real people, so it is blocked in plan mode.
   The built-in Conductor holds all three whenever Signal is configured; other
   agents get them from the builder's Signal group.
+- **Email** — `email_send` sends over the SMTP settings (⚙ → Email), either a
+  new message or a threaded reply (`reply_to_id`: recipients, `Re:` subject,
+  `In-Reply-To`/`References` filled in). With an IMAP host also set, fastcar
+  copies the mailbox into Postgres (the last 30 days / 200 messages on first
+  contact, then new mail via IDLE with a 60s poll fallback). It never changes
+  the server's `\Seen` flags. `email_list` shows the threads and `email_read`
+  shows one; with `wait_seconds` it waits for an answer, and with no id it
+  waits for any new mail, optionally filtered by sender. Inbound mail is only
+  stored, as with Signal. `email_send` is blocked in plan mode.
+- **Web browsing** — the `browser_*` tools give each thread a persistent
+  headless Chromium context (cookies, logins, tabs), so agents can work
+  through multi-page sites and forms:
+  - `browser_open` returns an accessibility snapshot with `[ref=eN]` ids.
+  - `browser_act` runs batched click/fill/select/check/press/… by ref.
+  - `browser_extract` pulls text, links, markdown tables, or form fields with
+    their values and validation errors.
+  - `browser_tabs`, `browser_screenshot` and `browser_close` handle the rest.
+  - Sessions close after 10 idle minutes. At most 3 run at once; the least
+    recently used is evicted. Downloads land in
+    `$FASTCAR_DATA_DIR/browser/<thread>/downloads`.
+  - Only `browser_act` is blocked in plan mode.
+  - They use the same Chromium as `browser_check` (`FASTCAR_CHROMIUM_PATH`).
 - While the agent is running, sending a message **steers** it; ◼ Stop aborts
   (cascading into any running subagents).
 

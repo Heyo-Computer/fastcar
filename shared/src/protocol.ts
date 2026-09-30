@@ -150,6 +150,21 @@ export interface SmtpSettingsResponse {
   fromAddress: string;
   secure: boolean;
   configured: boolean;
+  /** Incoming mail (IMAP). A blank host means the inbox is off. */
+  imapHost: string;
+  imapPort: number;
+  imapSecure: boolean;
+  /** Blank = the SMTP login is reused. */
+  imapUsername: string;
+  imapMailbox: string;
+  imapConfigured: boolean;
+  imapStatus: EmailInboxStatus;
+}
+
+export interface EmailInboxStatus {
+  state: "stopped" | "running" | "down";
+  error: string | null;
+  lastSyncAt: string | null;
 }
 
 /** POST /api/smtp — password is optional (blank keeps the stored value). */
@@ -160,6 +175,13 @@ export interface SmtpSettingsRequest {
   password?: string;
   fromAddress: string;
   secure: boolean;
+  imapHost?: string;
+  imapPort?: number;
+  imapSecure?: boolean;
+  imapUsername?: string;
+  /** Blank keeps the stored value; with no stored value the SMTP password is reused. */
+  imapPassword?: string;
+  imapMailbox?: string;
 }
 
 /**

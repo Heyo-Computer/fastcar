@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { chromium, type Browser, type Page } from "playwright-core";
 import type { Config } from "../config.js";
+import { CHROMIUM_ARGS, findChromium } from "../services/chromium.js";
 
 /**
  * `browser_check`: load a page in headless Chromium, optionally interact with
@@ -13,23 +14,9 @@ import type { Config } from "../config.js";
  * against the app it is working on (e.g. fastcar's own web UI on
  * http://localhost:3000).
  *
- * Uses the system Chromium (installed in the VM image) via playwright-core —
- * no browser download at runtime. Resolution order: FASTCAR_CHROMIUM_PATH,
- * then well-known install paths.
+ * Uses the system Chromium (services/chromium.ts). For driving a site over
+ * several calls — logins, multi-page forms — see the browser_* tools.
  */
-
-const CHROMIUM_CANDIDATES = [
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-  "/usr/bin/google-chrome",
-  "/usr/bin/google-chrome-stable",
-];
-
-function findChromium(): string | undefined {
-  const explicit = process.env.FASTCAR_CHROMIUM_PATH?.trim();
-  if (explicit) return fs.existsSync(explicit) ? explicit : undefined;
-  return CHROMIUM_CANDIDATES.find((p) => fs.existsSync(p));
-}
 
 const Step = Type.Object({
   action: Type.Union(
@@ -93,12 +80,10 @@ export function createBrowserCheckTool(cfg: Config) {
       const logs: string[] = [];
       const stepResults: string[] = [];
       let browser: Browser | undefined;
-      // Chromium's sandbox needs privileges the Firecracker guest's root user
-      // deliberately lacks; the VM is single-tenant, so run without it.
       const onAbort = () => void browser?.close().catch(() => {});
       signal?.addEventListener("abort", onAbort);
       try {
-        browser = await chromium.launch({ executablePath, args: ["--no-sandbox"] });
+        browser = await chromium.launch({ executablePath, args: CHROMIUM_ARGS });
         const page = await browser.newPage();
         page.setDefaultTimeout(10_000);
         page.on("console", (m) => {

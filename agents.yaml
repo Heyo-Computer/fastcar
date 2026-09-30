@@ -14,25 +14,58 @@ agents:
 # for tools the conductor and subagents can call. The implementations live in
 # server/src/tools/*.ts; this section is the human/machine-readable contract.
 tools:
-  email:
-    description: Send an email via the configured SMTP server. Returns success/failure.
+  email_send:
+    description: |
+      Send a plain-text email from the configured account (SMTP), or a threaded
+      reply when reply_to_id is given. Mutating: blocked in plan mode.
     input:
       to:
-        type: string
-        description: Recipient email address.
+        type: string[]
+        description: Recipient addresses. Optional for a reply (defaults to the original sender).
+      cc:
+        type: string[]
+        description: Cc addresses.
       subject:
         type: string
-        description: Email subject line.
+        description: Required for a new message; a reply defaults to "Re: <original>".
       body:
         type: string
         description: Plain-text email body.
+      reply_to_id:
+        type: integer
+        description: Stored message id (#id from email_list/email_read) being answered.
     output:
-      success:
-        type: boolean
-        description: Whether the email was accepted by the SMTP server.
-      message:
+      id:
+        type: integer
+        description: Stored id of the sent message.
+      messageId:
         type: string
-        description: Status message (sent confirmation or error reason). Optional on success.
+        description: The Message-ID header it was sent with.
+  email_list:
+    description: List stored email threads (IMAP inbox + sent), most recent first, with unread counts.
+    input:
+      query:
+        type: string
+        description: Text to match in subject, sender or body.
+      unread_only:
+        type: boolean
+      limit:
+        type: integer
+  email_read:
+    description: |
+      Read the thread a message belongs to, oldest first. With wait_seconds,
+      block until new incoming mail arrives on it (or, without id, anywhere).
+    input:
+      id:
+        type: integer
+      limit:
+        type: integer
+      wait_seconds:
+        type: integer
+        description: Up to 600.
+      from_contains:
+        type: string
+        description: Only mail whose sender contains this text.
   heyctl:
     description: |
       Run the heyctl CLI — a kubectl-shaped client for app-lb's admin API.

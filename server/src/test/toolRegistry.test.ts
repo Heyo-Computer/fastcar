@@ -67,8 +67,23 @@ const PRESETS: Record<string, string[]> = {
 // for the ones that mutate, to the plan-mode set. Each needs its own reason.
 // signal_*: Signal messaging (2026-09-22); dropped unless SIGNAL_ACCOUNT is
 // set. signal_send reaches real people, so plan mode blocks it.
-const ADDED_TO_CONDUCTOR = ["signal_threads", "signal_read", "signal_send"];
-const ADDED_MUTATING = ["signal_send"];
+// email_list/email_read: reading the IMAP inbox (2026-09-30); dropped unless
+// IMAP is configured. browser_*: persistent headless browser sessions
+// (2026-09-30); dropped without Chromium. browser_act submits forms and
+// email_send reaches real people, so plan mode blocks both.
+const ADDED_TO_CONDUCTOR = [
+  "signal_threads", "signal_read", "signal_send",
+  "email_list", "email_read",
+  "browser_open", "browser_snapshot", "browser_act", "browser_extract",
+  "browser_screenshot", "browser_tabs", "browser_close",
+];
+const ADDED_MUTATING = ["signal_send", "email_send", "browser_act"];
+
+// --- deliberate renames since the freeze -----------------------------------
+// email → email_send (2026-09-30), in place, when email learned to read.
+// Migration 011 renames it in stored agent allowlists as well.
+const RENAMED: Record<string, string> = { email: "email_send" };
+const renamed = (names: string[]) => names.map((n) => RENAMED[n] ?? n);
 
 const cfg = { dataDir: "/tmp/fastcar-test", workdir: "/tmp" } as unknown as Config;
 const stub = <T,>() => ({}) as T;
@@ -82,16 +97,17 @@ function fullCtx(): ToolContext {
     onSubagentEvent: () => {},
     askBridge: { ask: async () => "" },
     planBridge: { submit: () => {} },
-    email: stub(),
+    email: { smtpConfigured: () => true, imapConfigured: () => true } as unknown as ToolContext["email"],
     artifacts: stub(),
     mcp: stub(),
     signal: stub(),
+    browsers: { available: () => true } as unknown as ToolContext["browsers"],
   };
 }
 
 test("tool registry", async (t) => {
   await t.test("the conductor allowlist is unchanged", () => {
-    const want = [...CONDUCTOR_ALLOWLIST, ...ADDED_TO_CONDUCTOR];
+    const want = [...renamed(CONDUCTOR_ALLOWLIST), ...ADDED_TO_CONDUCTOR];
     assert.deepEqual([...CONDUCTOR_DEFAULT_TOOLS], want);
     assert.deepEqual(buildToolset(CONDUCTOR_DEFAULT_TOOLS, fullCtx()).tools, want);
   });
@@ -107,12 +123,14 @@ test("tool registry", async (t) => {
   });
 
   await t.test("a missing dependency drops its tools, as the old conditionals did", () => {
-    const ctx = { ...fullCtx(), email: undefined, artifacts: undefined, mcp: undefined, signal: undefined };
+    const ctx = {
+      ...fullCtx(), email: undefined, artifacts: undefined, mcp: undefined, signal: undefined, browsers: undefined,
+    };
     const { tools, dropped } = buildToolset(CONDUCTOR_DEFAULT_TOOLS, ctx);
-    const gone = ["email", "create_artifact", "update_artifact", "list_artifacts",
+    const gone = ["email_send", "create_artifact", "update_artifact", "list_artifacts",
                   "mcp_install", "mcp_remove", "mcp_list_servers", "mcp_list_tools", "mcp_call",
                   ...ADDED_TO_CONDUCTOR];
-    assert.deepEqual(tools, CONDUCTOR_ALLOWLIST.filter((n) => !gone.includes(n)));
+    assert.deepEqual(tools, renamed(CONDUCTOR_ALLOWLIST).filter((n) => !gone.includes(n)));
     assert.deepEqual(dropped.sort(), [...gone].sort());
   });
 
@@ -174,14 +192,28 @@ test("tool registry", async (t) => {
   });
 
   await t.test("listTools reports availability with a reason", () => {
-    const rows = listTools({ email: false, artifacts: true, mcp: true, signal: false });
-    const email = rows.find((r) => r.name === "email")!;
+    const rows = listTools({ email: false, emailInbox: false, browser: false, artifacts: true, mcp: true, signal: false });
+    const email = rows.find((r) => r.name === "email_send")!;
     assert.equal(email.available, false);
     assert.match(email.unavailableReason!, /SMTP/);
+    assert.match(rows.find((r) => r.name === "email_read")!.unavailableReason!, /IMAP/);
+    assert.match(rows.find((r) => r.name === "browser_act")!.unavailableReason!, /Chromium/);
     const signal = rows.find((r) => r.name === "signal_send")!;
     assert.equal(signal.available, false);
     assert.match(signal.unavailableReason!, /SIGNAL_ACCOUNT/);
     assert.equal(rows.find((r) => r.name === "read")!.available, true);
     assert.equal(rows.find((r) => r.name === "ask_user")!.alwaysOn, true);
+  });
+
+  await t.test("email tools follow the configured state, not the service's presence", () => {
+    const smtpOnly = {
+      ...fullCtx(),
+      email: { smtpConfigured: () => true, imapConfigured: () => false } as unknown as ToolContext["email"],
+    };
+    const { tools, dropped } = buildToolset(["email_send", "email_list", "email_read"], smtpOnly);
+    assert.deepEqual(tools, ["email_send"]);
+    assert.deepEqual(dropped, ["email_list", "email_read"]);
+    const noChromium = { ...fullCtx(), browsers: { available: () => false } as unknown as ToolContext["browsers"] };
+    assert.deepEqual(buildToolset(["browser_open"], noChromium).tools, []);
   });
 });
