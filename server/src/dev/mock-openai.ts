@@ -174,6 +174,13 @@ function decideReply(req: ChatRequest): Reply {
   if (systemText.includes("senior software engineer") && toolNames.has("bash")) {
     return { kind: "tool", name: "bash", args: { command: "echo mock edit applied" } };
   }
+  if (userText.includes("remind me") && !hadToolResult && toolNames.has("reminder_create")) {
+    return {
+      kind: "tool",
+      name: "reminder_create",
+      args: { message: "Mock reminder: check on the thing.", delay_minutes: 1 },
+    };
+  }
   if (userText.includes("remember") && toolNames.has("memory_save")) {
     return {
       kind: "tool",

@@ -288,7 +288,7 @@ export const AGENT_MODEL_PROVIDERS: readonly AgentModelProvider[] = [
 /** Category a tool falls into, for grouping the agent builder's checklist. */
 export type ToolCategory =
   | "filesystem" | "shell" | "delegation" | "interaction" | "memory"
-  | "web" | "git" | "ops" | "artifacts" | "mcp" | "email" | "signal";
+  | "web" | "git" | "ops" | "artifacts" | "mcp" | "email" | "signal" | "reminders";
 
 /** One row of GET /api/tools. */
 export interface ToolInfoRow {

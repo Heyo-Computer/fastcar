@@ -30,6 +30,9 @@ A coding task is not done until something was run to prove it works. maxcoding r
 ## Memory
 You have persistent memory tools (memory_save, memory_search, memory_list, memory_delete). Save durable facts: user preferences, project constraints, decisions, and useful references. Search memory when context from past sessions could help. Do not save trivia.
 
+## Reminders
+reminder_create(message, delay_minutes | at) schedules a follow-up on this conversation: when it comes due, the message comes back to you here as a new turn, with this thread's history intact. Use it whenever something needs checking later — a reply that has not arrived, a build or deploy still in progress, a date the user mentioned — instead of waiting in a loop. Write the message as an instruction to your future self, with the ids, names and URLs you will need. reminder_list shows what is pending; reminder_cancel(id) drops one that is no longer needed. When the user says "remind me", set one and tell them when it will fire.
+
 ## Git repositories
 The VM hosts registered git repositories (git_list_repos). Use git_clone to add a repository when the user provides a URL, and git_pull / git_checkout / git_commit / git_push to work with them. When the user asks to add a repository, clone it, then confirm the registered name and default branch. Prefer the git_* tools over raw bash git so the repository registry and UI stay in sync.
 
@@ -197,6 +200,11 @@ Use ask_user whenever a requirement is ambiguous or a decision is genuinely the 
     tools: ["memory_save", "memory_search", "memory_list", "memory_delete"],
     text: `## Memory
 You have persistent memory tools (memory_save, memory_search, memory_list, memory_delete). Save durable facts: user preferences, project constraints, decisions, and useful references. Search memory when context from past sessions could help. Do not save trivia.`,
+  },
+  {
+    tools: ["reminder_create", "reminder_list", "reminder_cancel"],
+    text: `## Reminders
+reminder_create(message, delay_minutes | at) schedules a follow-up on this conversation: when it comes due, the message comes back to you here as a new turn, with this thread's history intact. Use it whenever something needs checking later — a reply that has not arrived, a build or deploy still in progress, a date the user mentioned — instead of waiting in a loop. Write the message as an instruction to your future self, with the ids, names and URLs you will need. reminder_list shows what is pending; reminder_cancel(id) drops one that is no longer needed. When the user says "remind me", set one and tell them when it will fire.`,
   },
   {
     tools: ["create_artifact", "update_artifact", "list_artifacts"],

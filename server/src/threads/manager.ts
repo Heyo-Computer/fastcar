@@ -724,6 +724,20 @@ export class ThreadManager {
     void this.runPrompt(rt, conductor, await expandMentions(this.cfg, text));
   }
 
+  /**
+   * A due reminder: start a turn on the thread that set it, as if the user had
+   * sent the reminder text. Returns "busy" instead of throwing when the thread
+   * cannot take work right now, so the sweep can retry later.
+   */
+  async deliverReminder(threadId: string, text: string): Promise<"delivered" | "busy"> {
+    const rt = await this.getRuntime(threadId);
+    return this.enqueue(rt, async () => {
+      if (rt.status !== "idle") return "busy";
+      await this.startPrompt(rt, text);
+      return "delivered";
+    });
+  }
+
   /** Shared entry guard for anything that starts new work on a thread. */
   private assertAcceptsWork(rt: ThreadRuntime): void {
     if (rt.status === "running") throw new Error("agent is already running — use steer");

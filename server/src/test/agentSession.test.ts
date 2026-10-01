@@ -38,6 +38,8 @@ const CONDUCTOR_TOOLS_GOLDEN = [
   "git_clone", "git_pull", "git_checkout", "git_commit", "git_push",
   "git_status", "git_purge", "git_list_repos",
   "heyctl",
+  // Added 2026-10-01; no service dependency, so present in this context too.
+  "reminder_create", "reminder_list", "reminder_cancel",
 ].sort();
 
 function tempConfig(dataDir: string): Config {

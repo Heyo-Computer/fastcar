@@ -30,6 +30,7 @@ import { createGitTools } from "./git.js";
 import { createHeyctlTools } from "./heyctl.js";
 import { createMcpTools } from "./mcp.js";
 import { createMemoryTools } from "./memory.js";
+import { createReminderTools } from "./reminders.js";
 import { createRunSubagentTool, type SubagentEventSink } from "./runSubagent.js";
 import { createSignalTools } from "./signal.js";
 import { createSubmitPlanTool, type SubmitPlanBridge } from "./submitPlan.js";
@@ -47,7 +48,8 @@ export type ToolCategory =
   | "artifacts"
   | "mcp"
   | "email"
-  | "signal";
+  | "signal"
+  | "reminders";
 
 /** Which optional dependency a tool's factory needs from the ToolContext. */
 export type ToolDep =
@@ -97,7 +99,8 @@ type ToolGroup =
   | "heyctl"
   | "artifacts"
   | "mcp"
-  | "signal";
+  | "signal"
+  | "reminders";
 
 /** Everything a group factory might need. Optional fields mirror ConductorDeps. */
 export interface ToolContext {
@@ -131,6 +134,7 @@ const GROUP_FACTORIES: Record<ToolGroup, (ctx: ToolContext) => ToolDefinition[]>
   artifacts: (c) => createArtifactTools(c.artifacts!, c.threadId),
   mcp: (c) => createMcpTools(c.mcp!, c.allowedMcpServers),
   signal: (c) => createSignalTools(c.signal!, c.cfg.workdir),
+  reminders: (c) => createReminderTools(c.threadId),
 };
 
 /** True when the context carries what this tool's factory needs. */
@@ -220,6 +224,13 @@ export const TOOLS: readonly ToolDef[] = [
   m("memory_search", "Search memory", "Full-text search over saved memories."),
   m("memory_list", "List memories", "List recent memories."),
   m("memory_delete", "Delete memory", "Delete a saved memory.", true),
+
+  // ---- Reminders -----------------------------------------------------------
+  // Only touches fastcar's own state (like memory_save), so plan mode allows
+  // it; a reminder that fires in plan mode is still gated like any turn.
+  r("reminder_create", "Set reminder", "Schedule a follow-up that wakes this thread later."),
+  r("reminder_list", "List reminders", "List this thread's pending reminders."),
+  r("reminder_cancel", "Cancel reminder", "Cancel a pending reminder."),
 
   // ---- Web -----------------------------------------------------------------
   {
@@ -314,6 +325,9 @@ export const TOOLS: readonly ToolDef[] = [
 
 function m(name: string, label: string, description: string, mutating = false): ToolDef {
   return { name, label, description, category: "memory", builtin: false, mutating, group: "memory" };
+}
+function r(name: string, label: string, description: string): ToolDef {
+  return { name, label, description, category: "reminders", builtin: false, mutating: false, group: "reminders" };
 }
 function g(name: string, label: string, description: string, mutating: boolean): ToolDef {
   return { name, label, description, category: "git", builtin: false, mutating, group: "git" };
@@ -507,6 +521,7 @@ export const CONDUCTOR_DEFAULT_TOOLS: readonly string[] = [
   "email_list", "email_read",
   // Dropped when no Chromium is installed.
   ...namesInGroup("browser_session"),
+  ...namesInGroup("reminders"),
 ];
 
 /** Read-only git, derived rather than hand-listed: git_status + git_list_repos. */

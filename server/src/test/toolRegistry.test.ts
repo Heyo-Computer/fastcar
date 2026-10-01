@@ -78,6 +78,9 @@ const ADDED_TO_CONDUCTOR = [
   "browser_screenshot", "browser_tabs", "browser_close",
 ];
 const ADDED_MUTATING = ["signal_send", "email_send", "browser_act"];
+// reminder_*: follow-up reminders (2026-10-01). No dependency, so never
+// dropped; they only touch fastcar's own state, so plan mode allows them.
+const ADDED_NO_DEPS = ["reminder_create", "reminder_list", "reminder_cancel"];
 
 // --- deliberate renames since the freeze -----------------------------------
 // email → email_send (2026-09-30), in place, when email learned to read.
@@ -107,7 +110,7 @@ function fullCtx(): ToolContext {
 
 test("tool registry", async (t) => {
   await t.test("the conductor allowlist is unchanged", () => {
-    const want = [...renamed(CONDUCTOR_ALLOWLIST), ...ADDED_TO_CONDUCTOR];
+    const want = [...renamed(CONDUCTOR_ALLOWLIST), ...ADDED_TO_CONDUCTOR, ...ADDED_NO_DEPS];
     assert.deepEqual([...CONDUCTOR_DEFAULT_TOOLS], want);
     assert.deepEqual(buildToolset(CONDUCTOR_DEFAULT_TOOLS, fullCtx()).tools, want);
   });
@@ -130,7 +133,7 @@ test("tool registry", async (t) => {
     const gone = ["email_send", "create_artifact", "update_artifact", "list_artifacts",
                   "mcp_install", "mcp_remove", "mcp_list_servers", "mcp_list_tools", "mcp_call",
                   ...ADDED_TO_CONDUCTOR];
-    assert.deepEqual(tools, renamed(CONDUCTOR_ALLOWLIST).filter((n) => !gone.includes(n)));
+    assert.deepEqual(tools, [...renamed(CONDUCTOR_ALLOWLIST).filter((n) => !gone.includes(n)), ...ADDED_NO_DEPS]);
     assert.deepEqual(dropped.sort(), [...gone].sort());
   });
 

@@ -26,6 +26,7 @@ import { SignalService } from "./services/signal.js";
 import { AgentService } from "./services/agents.js";
 import { adoptUnregisteredRepos } from "./services/git.js";
 import { Scheduler } from "./services/scheduler.js";
+import { ReminderService } from "./services/reminders.js";
 import { WebhookTokenStore } from "./services/webhookTokens.js";
 import { startMockOpenAI } from "./dev/mock-openai.js";
 
@@ -58,6 +59,7 @@ const manager = new ThreadManager(cfg, models, subagents, email, artifacts, mcp,
 });
 const scheduler = new Scheduler(manager, agents, new WebhookTokenStore(cfg));
 manager.attachScheduler(scheduler);
+const reminders = new ReminderService(manager);
 // Installed servers reconnect in the background; a broken one shows as "error" in the panel.
 await mcp.start();
 // signal-cli receives from here on; an unlinked account retries on a backoff.
@@ -66,6 +68,8 @@ signalService?.start();
 email.start();
 // Unwedges schedules left mid-run by a previous process, then starts ticking.
 await scheduler.start();
+// Posts due reminders back into the threads that set them.
+await reminders.start();
 // Registers repos an agent cloned with raw `git clone` before this process started.
 void adoptUnregisteredRepos(cfg).catch((err) => console.error("failed to adopt unregistered repos:", err));
 
@@ -102,6 +106,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   app.log.info(`${signal} received, shutting down`);
   scheduler.stop();
+  reminders.stop();
   await manager.shutdown().catch(() => {});
   await mcp.shutdown().catch(() => {});
   await signalService?.stop().catch(() => {});
