@@ -610,7 +610,7 @@ export function registerRoutes(
 
   // -------------------------------------------------------------- settings
 
-  /** GET /api/settings — conductor model + reasoning effort. Nothing secret; any caller. */
+  /** GET /api/settings — conductor model/effort + key status. Keys are masked, never plain; any caller. */
   app.get("/api/settings", async (_req, reply): Promise<AppSettingsResponse | FastifyReply> => {
     if (!deps.settings) return reply.code(404).send({ error: "settings not available" });
     return deps.settings.get();

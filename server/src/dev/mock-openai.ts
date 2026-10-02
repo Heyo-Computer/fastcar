@@ -45,6 +45,8 @@ export interface MockChatRequestRecord {
   reasoning_effort?: string;
   max_tokens?: number;
   toolNames: string[];
+  /** The bearer token sent, so tests can see which API key reached the wire. */
+  apiKey?: string;
 }
 
 const MAX_RECORDED_REQUESTS = 50;
@@ -322,6 +324,7 @@ export function startMockOpenAI(port: number): Promise<http.Server> {
           reasoning_effort: body.reasoning_effort,
           max_tokens: body.max_tokens,
           toolNames: (body.tools ?? []).map((t) => t.function?.name ?? "").filter(Boolean),
+          apiKey: req.headers.authorization?.replace(/^Bearer\s+/i, ""),
         });
         if (recorded.length > MAX_RECORDED_REQUESTS) recorded.shift();
         const reply = decideReply(body);

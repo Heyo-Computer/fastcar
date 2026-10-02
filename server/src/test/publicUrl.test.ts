@@ -87,6 +87,8 @@ describe("where the public URL surfaces", () => {
       conductorReasoningEffort: "medium",
       inceptionModel: "mercury-2.5",
       inceptionMaxTokens: 1,
+      conductorDefaults: { model: "mercury-2.5", maxTokens: 1 },
+      envApiKeys: { inception: undefined, openrouter: undefined, omlx: undefined },
     }) as unknown as Config;
 
   it("artifact links carry a caveat only when using the fallback", () => {

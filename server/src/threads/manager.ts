@@ -28,7 +28,7 @@ import { adoptUnregisteredRepos, collectRepoStatuses, gitEvents } from "../servi
 import { mcpEvents, type McpManager } from "../services/mcp.js";
 import { expandMentions } from "../services/mentions.js";
 import { translateSessionEvent } from "../pi/events.js";
-import type { FastcarModels } from "../pi/runtime.js";
+import { conductorModel, registerInceptionProvider, type FastcarModels } from "../pi/runtime.js";
 import type { SubagentKind, SubagentManager } from "../pi/subagents.js";
 import { completePrompt } from "../services/llmService.js";
 import { getPromptTemplate, resolveTemplate } from "../services/promptTemplates.js";
@@ -115,6 +115,7 @@ export class ThreadManager {
     private readonly extra: { agents?: AgentService; signal?: SignalService; browsers?: BrowserSessions } = {},
   ) {
     this.webhookTokens = new WebhookTokenStore(cfg);
+    this.conductorSpec = `${cfg.inceptionModel}:${cfg.inceptionMaxTokens}`;
     appSettingsEvents.on("changed", () => this.onSettingsChanged());
     gitEvents.on("changed", () => void this.broadcastRepos());
     mcpEvents.on("changed", () => void this.onMcpChanged());
@@ -154,8 +155,29 @@ export class ThreadManager {
     }
   }
 
-  /** The conductor's reasoning effort follows the ⚙ setting, live sessions included. */
+  /** The conductor model + budget last registered with the runtime. */
+  private conductorSpec: string;
+
+  /**
+   * The conductor follows the ⚙ settings, live sessions included: effort is
+   * pushed into each session; a new model id or max_tokens re-registers the
+   * InceptionLabs provider and rebuilds sessions on their next turn (Pi fixes
+   * the model at creation). Key changes need nothing here — Pi reads them from
+   * process.env per request.
+   */
   private onSettingsChanged(): void {
+    const spec = `${this.cfg.inceptionModel}:${this.cfg.inceptionMaxTokens}`;
+    if (spec !== this.conductorSpec) {
+      this.conductorSpec = spec;
+      try {
+        registerInceptionProvider(this.models.runtime, this.cfg);
+        this.models.conductor = conductorModel(this.models.runtime, this.cfg);
+        this.markAllSessionsStale();
+      } catch (err) {
+        console.error("failed to apply the conductor model settings:", err);
+      }
+    }
+
     const effort = this.conductorReasoningEffort();
     for (const rt of this.runtimes.values()) {
       // An agent that pins its own effort is not following the ⚙ setting, so
