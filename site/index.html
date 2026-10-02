@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>fastcar — a multi-vendor agent harness</title>
+        <meta
+            name="description"
+            content="fastcar is a multi-vendor agent harness built on the Pi coding-agent SDK. Agents with their own threads, scheduled agents, an inbox-first UI, a plan → approve → act workflow, subagent delegation, model routing, MCP servers, and channels & artifacts."
+        />
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="fastcar" />
+        <meta
+            property="og:title"
+            content="fastcar — a multi-vendor agent harness"
+        />
+        <meta
+            property="og:description"
+            content="A multi-vendor agent harness built on the Pi coding-agent SDK. Agents with their own threads, scheduled agents, an inbox-first UI, plan → approve → act, subagent delegation, model routing, MCP servers, and channels & artifacts."
+        />
+        <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>%F0%9F%8F%8E%EF%B8%8F</text></svg>" />
+        <link rel="stylesheet" href="styles/site.css" />
+        <script src="scripts/main.js" defer></script>
+    </head>
+
+    <body>
+        <div class="terminal-frame">
+            <!-- Navigation Row -->
+            <nav class="frame-nav" id="frameNav">
+                <div class="nav-left">
+                    <a href="#top" class="nav-logo">
+                        fastcar<span class="nav-logo-cursor">_</span>
+                    </a>
+                    <div class="nav-links" id="navLinks">
+                        <a href="#features" class="nav-item">Features</a>
+                        <a href="#how" class="nav-item">How it works</a>
+                        <a href="#routing" class="nav-item">Routing</a>
+                        <a href="#mcp" class="nav-item">MCP</a>
+                        <a
+                            href="https://github.com/Heyo-Computer/fastcar"
+                            class="nav-item"
+                            target="_blank"
+                            rel="noopener"
+                            >GitHub</a
+                        >
+                    </div>
+                </div>
+                <div class="nav-right">
+                    <a
+                        href="https://github.com/Heyo-Computer/fastcar"
+                        class="nav-item nav-cta"
+                        target="_blank"
+                        rel="noopener"
+                        >Get started</a
+                </div>
+                <button
+                    class="nav-toggle"
+                    id="navToggle"
+                    aria-label="Toggle navigation"
+                    aria-expanded="false"
+                    aria-controls="navLinks"
+                >
+                    <span class="nav-toggle-bar"></span>
+                    <span class="nav-toggle-bar"></span>
+                    <span class="nav-toggle-bar"></span>
+                </button>
+            </nav>
+
+            <!-- Main content -->
+            <main class="frame-content" id="top">
+                <!-- Hero -->
+                <section class="hero">
+                    <div class="hero-content">
+                        <pre class="hero-ascii" aria-hidden="true">    __        ___    __
+   / /__  ___/ /__  / /  ___ ____
+  / / _ \/ _  / _ \/ _ \/ -_) __/
+ /_/ .__/\_,_/\___/_.__/\__/_/
+  /_/</pre>
+                        <p class="hero-eyebrow">a multi-vendor agent harness</p>
+                        <h1 class="hero-title">
+                            Build agents that own their<br />threads &amp;
+                            ship their work.
+                        </h1>
+                        <p class="hero-tagline">
+                            fastcar is built on the
+                            <a
+                                href="https://pi.dev"
+                                target="_blank"
+                                rel="noopener">Pi coding-agent SDK</a
+                            >. Give each agent a role, a model, a tool
+                            allowlist, and a set of MCP servers — and it owns
+                            its own threads. Schedule one on a cron and every
+                            morning's run lands in your
+                            <span class="accent">inbox</span>.
+                        </p>
+                        <div class="hero-cta">
+                            <a
+                                href="https://github.com/Heyo-Computer/fastcar"
+                                class="btn btn-accent"
+                                target="_blank"
+                                rel="noopener"
+                                >Get started</a
+                            >
+                            <a href="#features" class="btn btn-ghost"
+                                >See features</a
+                            >
+                        </div>
+                    </div>
+                </section>
+
+                <hr class="divider-dotted divider-dotted--dark" />
+
+                <!-- Features -->
+                <section class="section" id="features">
+                    <div class="container">
+                        <div class="section-header">
+                            <span class="info-label">FEATURES</span>
+                            <h2>What's in the box</h2>
+                            <p>
+                                Everything you need to run a fleet of coding
+                                agents that talk to each other, to your tools,
+                                and to you.
+                            </p>
+                        </div>
+
+                        <div class="features-grid">
+                            <article class="feature-card">
+                                <span class="feature-icon">⋈</span>
+                                <h3>Agents with their own threads</h3>
+                                <p>
+                                    An agent is a role (its system prompt), a
+                                    model and reasoning effort, a tool
+                                    allowlist, and a subset of MCP servers —
+                                    and it owns its own threads. Each thread is
+                                    independently readable and linkable.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">◷</span>
+                                <h3>Scheduled agents</h3>
+                                <p>
+                                    Give an agent a schedule and it runs on a
+                                    cron. Each firing creates a fresh thread —
+                                    <code>&lt;schedule&gt; — &lt;date&gt;</code>
+                                    — so every morning's run is its own thing.
+                                    Missed firings fire once on restart, never
+                                    overlapping.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">▤</span>
+                                <h3>Inbox-first UI</h3>
+                                <p>
+                                    The inbox is the landing page: one row per
+                                    thread, newest reply first, with the agent, a
+                                    preview, an unread dot, and chips linking to
+                                    any artifacts the run published. Rows that
+                                    need you are flagged.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">→</span>
+                                <h3>Plan → approve → act</h3>
+                                <p>
+                                    In planning mode the agent explores
+                                    read-only, may ask clarifying questions, then
+                                    submits a plan. Approve to execute; request
+                                    changes to get a revision. Implementing tools
+                                    stay blocked until you approve.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">↳</span>
+                                <h3>Subagent delegation</h3>
+                                <p>
+                                    <code>maxcoding</code> handles heavy coding;
+                                    <code>minimodel</code> does fast exploration.
+                                    They run in-process as Pi sessions with
+                                    their own model and tools, with per-kind
+                                    concurrency limits and an abort cascade.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">⇄</span>
+                                <h3>Model routing</h3>
+                                <p>
+                                    One shared Pi
+                                    <code>ModelRuntime</code> serves every
+                                    session. InceptionLabs
+                                    <strong>Mercury</strong> for the
+                                    conductor; everything else rides OpenRouter.
+                                    Pick a model per agent, per subagent.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">⚙</span>
+                                <h3>MCP servers</h3>
+                                <p>
+                                    Extend agents with MCP servers — deployed
+                                    endpoints (API key or OAuth) or code cloned
+                                    and run locally over stdio. Each agent can
+                                    be limited to a subset; plan mode allows only
+                                    read-only tools.
+                                </p>
+                            </article>
+
+                            <article class="feature-card">
+                                <span class="feature-icon">⊞</span>
+                                <h3>Channels &amp; artifacts</h3>
+                                <p>
+                                    Agents publish HTML pages and markdown
+                                    documents as artifacts on a canonical public
+                                    path. Talk to them over Signal, email, or
+                                    the inbox — channels your agents actually
+                                    live on.
+                                </p>
+                            </article>
+                        </div>
+                    </div>
+                </section>
+
+                <hr class="divider-dotted divider-dotted--dark" />
+
+                <!-- How it works -->
+                <section class="section" id="how">
+                    <div class="container">
+                        <div class="section-header">
+                            <span class="info-label">HOW IT WORKS</span>
+                            <h2>From task to shipped</h2>
+                            <p>
+                                Four steps, each visible in the UI as it
+                                happens.
+                            </p>
+                        </div>
+
+                        <div class="steps-grid">
+                            <div class="step-card">
+                                <div class="step-number">01</div>
+                                <h3>Open the inbox</h3>
+                                <p>
+                                    The app opens to your inbox. Threads that
+                                    need you — a question to answer or a plan to
+                                    approve — are flagged and filterable.
+                                </p>
+                            </div>
+                            <div class="step-card">
+                                <div class="step-number">02</div>
+                                <h3>Give an agent a task</h3>
+                                <p>
+                                    Pick an agent, drop a task (or a
+                                    <code>.md</code> file, or a voice prompt).
+                                    The conductor delegates by default: heavy
+                                    work to <code>maxcoding</code>, exploration
+                                    to <code>minimodel</code>.
+                                </p>
+                            </div>
+                            <div class="step-card">
+                                <div class="step-number">03</div>
+                                <h3>Approve the plan</h3>
+                                <p>
+                                    In plan mode the agent explores read-only
+                                    and submits a plan, plus any questions only
+                                    you can answer. Approve, and the thread
+                                    flips to act mode.
+                                </p>
+                            </div>
+                            <div class="step-card">
+                                <div class="step-number">04</div>
+                                <h3>It verifies &amp; ships</h3>
+                                <p>
+                                    The implementing subagent runs the project's
+                                    tests/build/typecheck and reports a
+                                    Verification section. Artifacts land on a
+                                    public link in your inbox.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <hr class="divider-dotted divider-dotted--dark" />
+
+                <!-- Model routing + MCP detail -->
+                <section class="section section--panel" id="routing">
+                    <div class="container">
+                        <div class="split">
+                            <div class="split-text">
+                                <span class="info-label">MODEL ROUTING</span>
+                                <h2>One runtime, many models</h2>
+                                <p>
+                                    A single shared Pi
+                                    <code>ModelRuntime</code> serves every
+                                    session. The InceptionLabs provider is
+                                    registered programmatically
+                                    (OpenAI-compatible); everything else rides
+                                    OpenRouter. Subagents are plain in-process
+                                    Pi <code>AgentSession</code>s with their own
+                                    model, tools, and system prompt.
+                                </p>
+                                <ul class="vision-list">
+                                    <li>
+                                        Conductor: InceptionLabs
+                                        <strong>Mercury</strong>
+                                    </li>
+                                    <li>
+                                        <code>maxcoding</code> →
+                                        OpenRouter heavy coding model
+                                    </li>
+                                    <li>
+                                        <code>minimodel</code> → OpenRouter fast
+                                        exploration model
+                                    </li>
+                                    <li>Per-agent model &amp; reasoning effort</li>
+                                </ul>
+                            </div>
+                            <div class="split-art">
+<pre class="arch-diagram">  ┌─────────────────────────────┐
+  │   shared Pi ModelRuntime     │
+  │   ┌─────────┐  ┌──────────┐  │
+  │   │ Mercury │  │ OpenRouter│ │
+  │   │conductor│  │ subagents │ │
+  │   └────┬────┘  └─────┬────┘ │
+  │        │   maxcoding │      │
+  │        │   minimodel │      │
+  └────────┼─────────────┼──────┘
+           ▼             ▼
+      conductor turn   delegation</pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="section section--panel" id="mcp">
+                    <div class="container">
+                        <div class="split split--reverse">
+                            <div class="split-text">
+                                <span class="info-label">MCP SERVERS</span>
+                                <h2>Extend every agent</h2>
+                                <p>
+                                    Add MCP servers two ways: paste a deployed
+                                    endpoint URL (with an API key in the
+                                    headers, or OAuth discovered automatically),
+                                    or hand it a GitHub URL and fastcar clones,
+                                    builds, and runs it locally over stdio. Env
+                                    vars, headers, and OAuth tokens are encrypted
+                                    at rest. Each agent can be limited to a
+                                    subset — enforced when a call is made as
+                                    well as in its prompt.
+                                </p>
+                                <ul class="vision-list">
+                                    <li>Streamable HTTP with SSE fallback</li>
+                                    <li>OAuth dynamic registration + client metadata</li>
+                                    <li><code>mcp_list_tools</code> &amp; <code>mcp_call</code></li>
+                                    <li>Plan mode allows only read-only tools</li>
+                                </ul>
+                            </div>
+                            <div class="split-art">
+<pre class="arch-diagram">  agent  ──►  mcp_list_tools
+    │            (schemas)
+    ▼
+  mcp_call  ──►  deployed endpoint
+    │             (API key / OAuth)
+    ▼
+  local clone  ──►  npm i && build
+    │             stdio on demand
+    ▼
+  tools return to the agent turn</pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <hr class="divider-dotted divider-dotted--dark" />
+
+                <!-- CTA -->
+                <section class="section section--cta" id="cta">
+                    <div class="container cta-inner">
+                        <span class="info-label">READY</span>
+                        <h2>Run a fleet of agents, not a chat box.</h2>
+                        <p>
+                            Clone fastcar, point it at Postgres, drop in your
+                            keys (or run it in mock mode with none) and you have
+                            the whole loop — agents, schedules, subagents,
+                            MCP, artifacts, and an inbox that opens first.
+                        </p>
+                        <div class="hero-cta">
+                            <a
+                                href="https://github.com/Heyo-Computer/fastcar"
+                                class="btn btn-accent"
+                                target="_blank"
+                                rel="noopener"
+                                >Get started on GitHub</a
+                            >
+                            <a href="#features" class="btn btn-ghost"
+                                >Read the features</a
+                            >
+                        </div>
+                        <pre class="install-snippet"><code>$ git clone https://github.com/Heyo-Computer/fastcar
+$ cd fastcar &amp;&amp; npm install
+$ cp .env.example .env   # fill in keys (or set FASTCAR_MOCK=1)
+$ npm run migrate &amp;&amp; npm run dev</code></pre>
+                    </div>
+                </section>
+            </main>
+
+            <!-- Footer -->
+            <footer class="site-footer">
+                <div class="footer-content">
+                    <a href="#top" class="footer-logo"
+                        >fastcar<span class="nav-logo-cursor">_</span></a
+                    >
+                    <div class="footer-links">
+                        <a href="#features">Features</a>
+                        <a href="#how">How it works</a>
+                        <a href="#routing">Routing</a>
+                        <a href="#mcp">MCP</a>
+                        <a
+                            href="https://github.com/Heyo-Computer/fastcar"
+                            target="_blank"
+                            rel="noopener"
+                            >GitHub</a
+                        >
+                        <a
+                            href="https://heyo-computer.github.io/fastcar/"
+                            target="_blank"
+                            rel="noopener"
+                            >Docs</a
+                        >
+                    </div>
+                    <p>
+                        fastcar is a multi-vendor agent harness built on the
+                        <a
+                            href="https://pi.dev"
+                            target="_blank"
+                            rel="noopener">Pi coding-agent SDK</a
+                        >.
+                    </p>
+                    <p class="footer-muted">
+                        Built by Heyo Computer. InceptionLabs Mercury ·
+                        OpenRouter · MCP.
+                    </p>
+                </div>
+            </footer>
+        </div>
+    </body>
+</html>

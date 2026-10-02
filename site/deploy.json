@@ -1,0 +1,19 @@
+{
+  "id": "fastcar-site",
+  "routes": [
+    {
+      "host": "REPLACE_ME_ROUTE_HOST"
+    }
+  ],
+  "site": {
+    "root": "/opt/fastcar-site",
+    "index": "index.html",
+    "not_found": "404.html",
+    "cache_control": "public, max-age=300"
+  },
+  "auth": {
+    "public_paths": [
+      { "path": "/", "scope": "public" }
+    ]
+  }
+}

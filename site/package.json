@@ -1,0 +1,22 @@
+{
+  "name": "fastcar-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Marketing site for fastcar — a multi-vendor agent harness built on the Pi coding-agent SDK.",
+  "license": "MIT",
+  "scripts": {
+    "clean": "node scripts/build.js --clean-only",
+    "build": "node scripts/build.js",
+    "serve": "node scripts/serve.js",
+    "start": "npm run build && npm run serve",
+    "watch": "onchange './*.html' './styles/*.css' './scripts/*.js' -- npm run build",
+    "dev": "npm run build && run-p watch serve"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5",
+    "onchange": "^7.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
