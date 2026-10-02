@@ -214,14 +214,41 @@ export interface AppSettingsResponse {
     defaultReasoningEffort: ReasoningEffort;
     /** max_tokens sent per request — the budget shared by reasoning and the answer. */
     maxTokens: number;
+    /** InceptionLabs model id in effect (settings override, else INCEPTION_MODEL). */
+    modelId: string;
+    /** The env-baked model id (INCEPTION_MODEL) — what clearing the override restores. */
+    defaultModelId: string;
+    /** The env-baked budget (INCEPTION_MAX_TOKENS) — what clearing the override restores. */
+    defaultMaxTokens: number;
   };
+  /** Provider API keys. Never returned in plain text, only a masked preview. */
+  keys: Record<ProviderKeyId, ApiKeyStatus>;
+}
+
+/** Provider API keys the ⚙ settings can override. */
+export type ProviderKeyId = "inception" | "openrouter" | "omlx";
+export const PROVIDER_KEY_IDS: readonly ProviderKeyId[] = ["inception", "openrouter", "omlx"];
+
+export interface ApiKeyStatus {
+  /** Env var the key is read from, e.g. INCEPTION_API_KEY. */
+  envVar: string;
+  /** "settings" = stored override, "env" = the environment, "unset" = neither. */
+  source: "settings" | "env" | "unset";
+  /** Masked preview, e.g. "••••a1b2"; null when unset. */
+  preview: string | null;
 }
 
 /** POST /api/settings — partial; omitted fields keep their stored value. */
 export interface AppSettingsRequest {
   conductor?: {
     reasoningEffort?: ReasoningEffort;
+    /** InceptionLabs model id; null clears the override (back to INCEPTION_MODEL). */
+    modelId?: string | null;
+    /** max_tokens; null clears the override (back to INCEPTION_MAX_TOKENS). */
+    maxTokens?: number | null;
   };
+  /** A string stores an override; null or "" clears it (back to the env var). */
+  keys?: Partial<Record<ProviderKeyId, string | null>>;
 }
 
 // ---------------------------------------------------------------------------

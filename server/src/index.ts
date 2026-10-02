@@ -37,6 +37,9 @@ await migrate();
 // Questions/runs from a previous process cannot be resumed; unstick their threads.
 await resetTransientStatuses();
 
+// Applies stored ⚙ overrides (conductor model, provider keys) onto cfg and
+// process.env, so it must exist before the models are built.
+const settings = new AppSettings(cfg);
 const models = await buildModels(cfg);
 const mcp = new McpManager(cfg);
 const subagentSettings = new SubagentSettings(cfg);
@@ -45,7 +48,6 @@ const artifacts = new ArtifactService(cfg);
 const email = new EmailService(cfg);
 // Chromium launches on the first browser_* call, not here.
 const browsers = new BrowserSessions(cfg);
-const settings = new AppSettings(cfg);
 const agents = new AgentService(cfg, settings, mcp);
 // Undefined unless SIGNAL_ACCOUNT is set; the signal_* tools are dropped then.
 const signalService = SignalService.fromConfig(cfg);

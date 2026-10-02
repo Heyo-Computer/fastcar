@@ -1,7 +1,20 @@
 import path from "node:path";
 import fs from "node:fs";
 import "./env.js";
-import { REASONING_EFFORTS, SUBAGENT_PROVIDERS, type ReasoningEffort, type SubagentProvider } from "@fastcar/shared";
+import {
+  REASONING_EFFORTS,
+  SUBAGENT_PROVIDERS,
+  type ProviderKeyId,
+  type ReasoningEffort,
+  type SubagentProvider,
+} from "@fastcar/shared";
+
+/** Env var each provider key is read from (and, after a ⚙ override, written back to). */
+export const PROVIDER_KEY_ENV: Record<ProviderKeyId, string> = {
+  inception: "INCEPTION_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  omlx: "OMLX_API_KEY",
+};
 
 export interface Config {
   port: number;
@@ -38,6 +51,17 @@ export interface Config {
    * if high-effort runs stop with finish_reason "length".
    */
   inceptionMaxTokens: number;
+  /**
+   * inceptionModel / inceptionMaxTokens as the environment set them. The ⚙
+   * settings may override the two live fields above; these never change.
+   */
+  conductorDefaults: { model: string; maxTokens: number };
+  /**
+   * Provider keys as the environment set them, captured before any ⚙ override
+   * is written into process.env (Pi resolves "$INCEPTION_API_KEY" & co. from
+   * process.env per request, so that is where an override has to land).
+   */
+  envApiKeys: Record<ProviderKeyId, string | undefined>;
   /** Boot-time conductor reasoning effort; the settings UI overrides it at runtime. */
   conductorReasoningEffort: ReasoningEffort;
   /** Token identifying an admin caller (Feature 2/3 restrictions). Blank = no auth. */
@@ -154,8 +178,10 @@ export function loadConfig(): Config {
   if (!mock) {
     const missing = ["INCEPTION_API_KEY", "OPENROUTER_API_KEY"].filter((k) => !env(k));
     if (missing.length) {
-      throw new Error(
-        `Missing required env vars: ${missing.join(", ")} (set FASTCAR_MOCK=1 to run without keys)`,
+      // Not fatal: the keys can be entered in the ⚙ settings, which persist them.
+      console.warn(
+        `[fastcar] ${missing.join(", ")} not set in the environment — set it in ⚙ settings ` +
+          "unless one is stored there already (or FASTCAR_MOCK=1 to run without keys)",
       );
     }
   } else {
@@ -172,6 +198,8 @@ export function loadConfig(): Config {
 
   const port = Number(env("PORT") ?? 3000);
   warnAboutPublicUrl(port);
+  const inceptionModel = env("INCEPTION_MODEL") ?? "mercury-2.5";
+  const inceptionMaxTokens = Number(env("INCEPTION_MAX_TOKENS") ?? 16384);
   return {
     port,
     databaseUrl,
@@ -196,8 +224,14 @@ export function loadConfig(): Config {
     inceptionBaseUrl: mock
       ? `http://127.0.0.1:${mockPort}/v1`
       : "https://api.inceptionlabs.ai/v1",
-    inceptionModel: env("INCEPTION_MODEL") ?? "mercury-2.5",
-    inceptionMaxTokens: Number(env("INCEPTION_MAX_TOKENS") ?? 16384),
+    inceptionModel,
+    inceptionMaxTokens,
+    conductorDefaults: { model: inceptionModel, maxTokens: inceptionMaxTokens },
+    envApiKeys: {
+      inception: env(PROVIDER_KEY_ENV.inception),
+      openrouter: env(PROVIDER_KEY_ENV.openrouter),
+      omlx: env(PROVIDER_KEY_ENV.omlx),
+    },
     conductorReasoningEffort: reasoningEffortEnv("CONDUCTOR_REASONING_EFFORT", "medium"),
     adminToken: env("FASTCAR_ADMIN_TOKEN"),
     defaultOwner: env("FASTCAR_DEFAULT_OWNER") ?? null,
