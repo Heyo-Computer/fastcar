@@ -84,6 +84,53 @@ $EDITOR deploy/fastcar.json      # fill REPLACE_ME_* keys + route host
 serverctl apply -f deploy/fastcar.json
 ```
 
+## Marketing site
+
+[`site/`](site/) is a self-contained static marketing site (plain HTML/CSS/JS,
+no framework) for fastcar. Build it and preview locally:
+
+```sh
+cd site
+npm install
+npm run build      # verified copy of the source → site/dist/
+npm start         # build, then serve on http://localhost:3000
+```
+
+See [`site/README.md`](site/README.md) for the full structure, scripts, and
+the GitHub Pages / Netlify / Vercel / S3 / nginx deploy options. The site uses
+relative asset paths, so `site/dist/` deploys anywhere.
+
+### Deploying behind app-lb
+
+`site/deploy.json` is an app-lb **static-site** deployment spec — app-lb
+serves `site/dist/` directly from the host (no VM, no image), the way nginx's
+`root` or a CloudFront origin works:
+
+```sh
+cd site && npm install && npm run build     # produces site/dist/
+# Copy the built files to the app-lb host at the spec's site.root (/opt/fastcar-site):
+rsync -a --delete site/dist/ app-lb-host:/opt/fastcar-site/
+$EDITOR site/deploy.json                     # set routes[0].host to your hostname
+heyctl apply -f site/deploy.json
+heyctl describe fastcar-site
+```
+
+The spec declares the whole site public (`auth.public_paths` lists `/` as
+`public`), so it skips app-lb's sign-in gate — a marketing site should be
+reachable by anyone. `site.cache_control` sets a short `max-age` so edits to
+the synced files pick up within five minutes. Placeholders to fill before
+`heyctl apply`:
+
+| Key | Placeholder |
+| --- | --- |
+| `routes[0].host` | `REPLACE_ME_ROUTE_HOST` — the public hostname, e.g. `fastcar.example.com` |
+| `site.root` | `/opt/fastcar-site` — where `site/dist/` is staged on the app-lb host; change it if you stage elsewhere |
+
+A static site has no VM pool, so there is nothing to scale, no image to build,
+and no `env_vars` — app-lb proxies requests straight to the files at
+`site.root`. Re-sync `site/dist/` and the changes are live; bump
+`site.cache_control` if you want a longer CDN TTL.
+
 ## Requirements
 
 - Node ≥ 22.19
