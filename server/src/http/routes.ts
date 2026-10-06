@@ -22,7 +22,7 @@ import type {
 } from "@fastcar/shared";
 import type { Config } from "../config.js";
 import { listEvents } from "../db/events.js";
-import { getThread, listThreads } from "../db/threads.js";
+import { getThread, listThreads, updateThread } from "../db/threads.js";
 import { threadMeta } from "../services/threadMeta.js";
 import { inboxCounts, listInbox } from "../db/inbox.js";
 import { listArtifactsForAgent } from "../db/artifacts.js";
@@ -107,6 +107,21 @@ export function registerRoutes(
     };
     return res;
   });
+
+  app.patch<{ Params: { id: string }; Body: Partial<{ title?: string; starred?: boolean }> }>(
+    "/api/threads/:id",
+    async (req, reply) => {
+      const thread = await getThread(req.params.id);
+      if (!thread) return reply.code(404).send({ error: "no such thread" });
+      const patch: Partial<{ title?: string; starred?: boolean }> = {};
+      if (req.body.title !== undefined) patch.title = req.body.title;
+      if (req.body.starred !== undefined) patch.starred = req.body.starred;
+      if (Object.keys(patch).length === 0) return reply.code(400).send({ error: "nothing to update" });
+      const updated = await updateThread(req.params.id, patch);
+      if (!updated) return reply.code(404).send({ error: "no such thread" });
+      return { thread: threadMeta(cfg, updated) };
+    },
+  );
 
   app.get("/api/repos", async () => ({ repos: await collectRepoStatuses() }));
 

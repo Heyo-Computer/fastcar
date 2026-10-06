@@ -29,6 +29,7 @@ interface ThreadRow {
   source: ThreadSource;
   schedule_id: string | null;
   archived: boolean;
+  starred: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -78,6 +79,7 @@ function toRecord(row: ThreadRow): ThreadRecord {
     inboxDismissedAt: row.inbox_dismissed_at?.toISOString() ?? null,
     source: row.source,
     scheduleId: row.schedule_id,
+    starred: row.starred,
   };
 }
 
@@ -152,6 +154,7 @@ export async function updateThread(
     inboxDismissedAt: Date | null;
     source: ThreadSource;
     scheduleId: string | null;
+    starred: boolean;
   }>,
 ): Promise<ThreadRecord | null> {
   const sets: string[] = ["updated_at = now()"];
@@ -177,6 +180,7 @@ export async function updateThread(
   if (patch.inboxDismissedAt !== undefined) col("inbox_dismissed_at", patch.inboxDismissedAt);
   if (patch.source !== undefined) col("source", patch.source);
   if (patch.scheduleId !== undefined) col("schedule_id", patch.scheduleId);
+  if (patch.starred !== undefined) col("starred", patch.starred);
   values.push(id);
   const { rows } = await getPool().query<ThreadRow>(
     `UPDATE threads SET ${sets.join(", ")} WHERE id = $${values.length} RETURNING *`,
