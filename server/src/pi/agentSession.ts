@@ -18,6 +18,7 @@ import type { ArtifactService } from "../services/artifacts.js";
 import type { EmailService } from "../services/emailService.js";
 import type { BrowserSessions } from "../services/browserSessions.js";
 import type { SignalService } from "../services/signal.js";
+import { compactionSettings, pruneStaleToolResults } from "./contextPruning.js";
 import { composeAgentPrompt } from "./prompts.js";
 import {
   conductorEffortToThinkingLevel,
@@ -111,18 +112,28 @@ export async function createManagedSession(deps: AgentSessionDeps): Promise<Agen
     browsers: deps.browsers,
   });
 
+  const model = resolveAgentModel(models.runtime, cfg, agent);
   const { session } = await createAgentSession({
     cwd: cfg.workdir,
     agentDir,
     modelRuntime: models.runtime,
-    model: resolveAgentModel(models.runtime, cfg, agent),
+    model,
     thinkingLevel: conductorEffortToThinkingLevel(deps.reasoningEffort),
     tools: toolset.tools,
     customTools: toolset.customTools,
     resourceLoader: loader,
     sessionManager,
-    settingsManager: SettingsManager.inMemory(),
+    // Compact at half the window instead of Pi's "window - 16k" — see contextPruning.ts.
+    settingsManager: SettingsManager.inMemory({
+      compaction: compactionSettings(model.contextWindow || 128_000),
+    }),
   });
+
+  // Trim stale bulky tool output from what the model is sent. Pi installs its
+  // own transform (the extension "context" hook), so run ours after it.
+  const piTransform = session.agent.transformContext;
+  session.agent.transformContext = async (messages, signal) =>
+    pruneStaleToolResults(piTransform ? await piTransform(messages, signal) : messages);
 
   // A resumed JSONL session replays its own thinking level (possibly the old
   // "off"); the current setting always wins.

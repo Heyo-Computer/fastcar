@@ -128,6 +128,9 @@ const COMMANDS: CommandDef[] = [
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Too little history to summarize is an expected answer, not a failure.
+        if (/already compacted/i.test(message)) {
+          return `Already compacted — nothing new since the last compaction (context holds ${num(before)} tokens).`;
+        }
         if (!/nothing to compact/i.test(message)) throw err;
         return `Nothing to compact yet — the context holds ${num(before)}${
           usage ? ` of ${num(usage.contextWindow)}` : ""

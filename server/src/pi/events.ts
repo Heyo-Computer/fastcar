@@ -103,7 +103,33 @@ export function translateSessionEvent(event: AgentSessionEvent): StreamEvent[] {
           result: resultToText(event.result),
         },
       ];
+    case "compaction_end":
+      return compactionNotice(event);
     default:
       return [];
   }
+}
+
+const tokens = (n: number): string => `${Math.round(n / 1000).toLocaleString("en-US")}k`;
+
+/**
+ * Pi compacts on its own when the context fills up (or overflows); surface
+ * that as a system row so it is not invisible. Manual `/compact` renders its
+ * own report, and an aborted compaction was the user's doing — both skipped.
+ */
+function compactionNotice(event: Extract<AgentSessionEvent, { type: "compaction_end" }>): StreamEvent[] {
+  if (event.reason === "manual" || event.aborted) return [];
+  if (event.result) {
+    const after = event.result.estimatedTokensAfter;
+    return [
+      {
+        kind: "system",
+        text: `Context compacted automatically (${tokens(event.result.tokensBefore)} → ~${
+          after == null ? "?" : tokens(after)
+        } tokens) — older history was summarized for the agent.`,
+      },
+    ];
+  }
+  if (event.errorMessage) return [{ kind: "error", message: event.errorMessage }];
+  return [];
 }
