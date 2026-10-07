@@ -50,46 +50,7 @@ export async function buildModels(cfg: Config): Promise<FastcarModels> {
     allowModelNetwork: false,
   });
 
-  runtime.registerProvider("inceptionlabs", {
-    name: "InceptionLabs",
-    baseUrl: cfg.inceptionBaseUrl,
-    apiKey: "$INCEPTION_API_KEY",
-    api: "openai-completions",
-    authHeader: true,
-    models: [
-      {
-        id: cfg.inceptionModel,
-        name: cfg.inceptionModel,
-        // Mercury 2.5 takes OpenAI-style `reasoning_effort`; Pi only emits it
-        // when the model is flagged as reasoning-capable.
-        reasoning: true,
-        // Pi thinking level -> Mercury reasoning_effort (instant | medium | high).
-        // `off` is unsupported (null) so the session always sends an explicit
-        // effort; see conductorEffortToThinkingLevel().
-        thinkingLevelMap: {
-          off: null,
-          minimal: "instant",
-          low: "instant",
-          medium: "medium",
-          high: "high",
-        },
-        input: ["text"],
-        contextWindow: 128000,
-        // Shared budget for reasoning + answer (InceptionLabs recommends 8192
-        // by default; more is needed at high effort).
-        maxTokens: cfg.inceptionMaxTokens,
-        cost: { input: 0.25, output: 0.75, cacheRead: 0.025, cacheWrite: 0 },
-        compat: {
-          // Mercury is a diffusion LM behind an OpenAI-compatible API; keep the
-          // request surface conservative apart from reasoning_effort.
-          supportsStrictMode: false,
-          supportsDeveloperRole: false,
-          supportsReasoningEffort: true,
-          maxTokensField: "max_tokens",
-        },
-      },
-    ],
-  });
+  registerInceptionProvider(runtime, cfg);
 
   // In mock mode, shadow the built-in OpenRouter provider with one pointed at
   // the local mock server so subagents need no real key either.
@@ -106,13 +67,68 @@ export async function buildModels(cfg: Config): Promise<FastcarModels> {
   // need no real OMLX endpoint either.
   registerOmlxProvider(runtime, cfg, cfg.mock ? cfg.inceptionBaseUrl : cfg.omlxBaseUrl);
 
-  const conductor = runtime.getModel("inceptionlabs", cfg.inceptionModel);
-  if (!conductor) throw new Error(`failed to register inceptionlabs/${cfg.inceptionModel}`);
+  const conductor = conductorModel(runtime, cfg);
 
   const maxcoding = getOrRegisterOpenRouterModel(runtime, cfg, cfg.maxcodingModel);
   const minimodel = getOrRegisterOpenRouterModel(runtime, cfg, cfg.minimodelModel);
 
   return { runtime, conductor, maxcoding, minimodel };
+}
+
+/**
+ * (Re-)register the InceptionLabs provider. It carries the live conductor
+ * model (cfg.inceptionModel, which a ⚙ override may have changed) and, when
+ * that differs, the env model too, so agents pinned to the env slug keep
+ * resolving. Both share the live max_tokens budget. Call again after a
+ * settings change; registerProvider replaces the previous config.
+ */
+export function registerInceptionProvider(runtime: ModelRuntime, cfg: Config): void {
+  const ids = [...new Set([cfg.inceptionModel, cfg.conductorDefaults.model])];
+  runtime.registerProvider("inceptionlabs", {
+    name: "InceptionLabs",
+    baseUrl: cfg.inceptionBaseUrl,
+    apiKey: "$INCEPTION_API_KEY",
+    api: "openai-completions",
+    authHeader: true,
+    models: ids.map((id) => ({
+      id,
+      name: id,
+      // Mercury 2.5 takes OpenAI-style `reasoning_effort`; Pi only emits it
+      // when the model is flagged as reasoning-capable.
+      reasoning: true,
+      // Pi thinking level -> Mercury reasoning_effort (instant | medium | high).
+      // `off` is unsupported (null) so the session always sends an explicit
+      // effort; see conductorEffortToThinkingLevel().
+      thinkingLevelMap: {
+        off: null,
+        minimal: "instant",
+        low: "instant",
+        medium: "medium",
+        high: "high",
+      },
+      input: ["text"] as ("text" | "image")[],
+      contextWindow: 128000,
+      // Shared budget for reasoning + answer (InceptionLabs recommends 8192
+      // by default; more is needed at high effort).
+      maxTokens: cfg.inceptionMaxTokens,
+      cost: { input: 0.25, output: 0.75, cacheRead: 0.025, cacheWrite: 0 },
+      compat: {
+        // Mercury is a diffusion LM behind an OpenAI-compatible API; keep the
+        // request surface conservative apart from reasoning_effort.
+        supportsStrictMode: false,
+        supportsDeveloperRole: false,
+        supportsReasoningEffort: true,
+        maxTokensField: "max_tokens" as const,
+      },
+    })),
+  });
+}
+
+/** The live conductor model, as registered by registerInceptionProvider. */
+export function conductorModel(runtime: ModelRuntime, cfg: Config): Model<any> {
+  const model = runtime.getModel("inceptionlabs", cfg.inceptionModel);
+  if (!model) throw new Error(`failed to register inceptionlabs/${cfg.inceptionModel}`);
+  return model;
 }
 
 /**
@@ -325,7 +341,7 @@ export function resolveAgentModel(
       const model = runtime.getModel("inceptionlabs", agent.modelSlug);
       if (model) return model;
       throw new Error(
-        `inceptionlabs/${agent.modelSlug} is not registered; this server runs INCEPTION_MODEL=${cfg.inceptionModel}`,
+        `inceptionlabs/${agent.modelSlug} is not registered; this server runs ${cfg.inceptionModel}`,
       );
     }
     case "omlx":

@@ -65,6 +65,8 @@ function tempConfig(dataDir: string): Config {
     inceptionBaseUrl: `http://127.0.0.1:${MOCK_PORT}/v1`,
     inceptionModel: "mercury-2.5",
     inceptionMaxTokens: 12345,
+    conductorDefaults: { model: "mercury-2.5", maxTokens: 12345 },
+    envApiKeys: { inception: undefined, openrouter: undefined, omlx: undefined },
     conductorReasoningEffort: "medium",
     adminToken: undefined,
     defaultOwner: null,

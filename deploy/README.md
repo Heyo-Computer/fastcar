@@ -88,6 +88,38 @@ Links in the artifacts panel and inbox are computed per request, so they
 correct themselves once it is set; links an agent already pasted into a reply
 are text, and do not.
 
+## Public image (onboarding)
+
+New Heyo users deploy fastcar as their first app: the app-lb dashboard's
+**Get started** card hands them a spec built for their namespace (app-lb's
+`GET /onboarding`). [`fastcar.onboarding.json`](fastcar.onboarding.json) is the
+same spec with the namespace left as a placeholder:
+
+- `FASTCAR_MOCK=1`, so it boots with no model keys. With no `DATABASE_URL`,
+  `start.sh` falls back to the image's own Postgres on the data disk.
+- `medium`, at most one VM, scaled to zero after 30 idle minutes.
+- Behind the namespace's `heyo` sign-in provider, with only `/api/health` public.
+  fastcar is an agent with a shell, so it is never deployed ungated.
+- `vm.image: "fastcar"` names the public catalog image. Through cloud's
+  namespace door, the catalog's download URL, size and digest are filled in. The
+  onboarding card's spec carries them itself, because it is deployed from Claude
+  Code straight to app-lb.
+
+The image is published to the cloud's public Firecracker catalog as a base
+image, which needs an **admin** JWT (`POST /public-images/base/presign`, then
+`/register-base`). Build it locally first:
+
+```sh
+heyvm mvm build --local-only -f deploy/image/Dockerfile -c . -n fastcar
+```
+
+The image must not carry anything private. `.dockerignore` keeps `.env` and
+`.fastcar/` out, and every key comes from the deployment's `env_vars` /
+`env_from` at boot. Check that again before each publish.
+
+To leave mock mode, store the keys as namespace secrets, reference them from
+`vm.env_from`, and set `FASTCAR_MOCK` to `0`.
+
 ## Building the rootfs on the server
 
 The spec's `build` block lets app-lb build the image itself — a git checkout of

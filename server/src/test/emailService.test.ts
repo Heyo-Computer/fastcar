@@ -29,6 +29,8 @@ function tempConfig(dataDir: string): Config {
     inceptionBaseUrl: "",
     inceptionModel: "mercury-2.5",
     inceptionMaxTokens: 16384,
+    conductorDefaults: { model: "mercury-2.5", maxTokens: 16384 },
+    envApiKeys: { inception: undefined, openrouter: undefined, omlx: undefined },
     conductorReasoningEffort: "medium",
     adminToken: undefined,
     defaultOwner: null,
