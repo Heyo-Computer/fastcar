@@ -124,10 +124,8 @@ describe("per-agent session construction", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  /** Run one turn for an agent and return the request Pi sent. */
-  async function turn(a: ResolvedAgent, text = "hello"): Promise<MockChatRequestRecord> {
-    const before = (await recorded()).length;
-    const handle = await createManagedSession({
+  function open(a: ResolvedAgent) {
+    return createManagedSession({
       cfg,
       models,
       subagents,
@@ -140,6 +138,12 @@ describe("per-agent session construction", () => {
       sessionFile: null,
       reasoningEffort: a.reasoningEffort,
     });
+  }
+
+  /** Run one turn for an agent and return the request Pi sent. */
+  async function turn(a: ResolvedAgent, text = "hello"): Promise<MockChatRequestRecord> {
+    const before = (await recorded()).length;
+    const handle = await open(a);
     try {
       await handle.session.prompt(text);
     } finally {
@@ -194,6 +198,30 @@ describe("per-agent session construction", () => {
     // The golden omits email/artifact/mcp tools: this context wires none of
     // those services, exactly as the dev/smoke entry point does not.
     assert.deepEqual([...req.toolNames].sort(), CONDUCTOR_TOOLS_GOLDEN);
+  });
+
+  it("compacts at half the window and trims stale tool output", async () => {
+    const handle = await open(agent({ tools: ["read"] }));
+    try {
+      const { session } = handle;
+      const window = session.model!.contextWindow;
+      assert.equal(session.settingsManager.getCompactionSettings().reserveTokens, Math.floor(window / 2));
+
+      const big = "x".repeat(10_000);
+      const messages = [
+        { role: "user", content: "go", timestamp: 0 },
+        { role: "assistant", content: [], timestamp: 0 },
+        { role: "toolResult", toolCallId: "1", toolName: "read", content: [{ type: "text", text: big }], isError: false, timestamp: 0 },
+        { role: "assistant", content: [], timestamp: 0 },
+        { role: "assistant", content: [], timestamp: 0 },
+        { role: "assistant", content: [], timestamp: 0 },
+      ];
+      const sent = await session.agent.transformContext!(messages as never);
+      const text = (sent[2] as { content: { text: string }[] }).content[0]!.text;
+      assert.ok(text.length < 1_000 && text.includes("trimmed from context"));
+    } finally {
+      handle.session.dispose();
+    }
   });
 });
 
