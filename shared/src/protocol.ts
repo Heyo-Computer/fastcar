@@ -65,6 +65,8 @@ export interface ThreadMeta {
   unread?: boolean;
   /** Dismissed from the inbox with no reply since; the thread itself is untouched. */
   inboxHidden?: boolean;
+  /** Pinned by the user; see 013_starred.sql. */
+  starred?: boolean;
   /** Public, unauthenticated trigger URL for a prompt thread (`/pt/<id>`), or null for chat threads. */
   publicUrl?: string | null;
   createdAt: string; // ISO
