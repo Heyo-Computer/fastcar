@@ -42,7 +42,7 @@ which launches the server. Placeholders to replace before `serverctl apply`:
 | `DATABASE_URL` | `postgres://fastcar:REPLACE_ME_DB_PASSWORD@db.example.com:5432/fastcar` — a Postgres **outside** the VM (see "State lives in the workspace") |
 | `vm.workspace.store` | `https://REPLACE_ME_ARTIFACT_STORE` — the artifact store (or `s3://bucket/prefix`) that keeps `/workspace` snapshots; `auth` is a serverctl secret named `art` |
 
-The conductor runs `INCEPTION_MODEL` (`mercury-2.5`) at `CONDUCTOR_REASONING_EFFORT`
+The conductor runs `INCEPTION_MODEL` (`mercury-3`) at `CONDUCTOR_REASONING_EFFORT`
 (`instant` | `medium` | `high`); the ⚙ settings modal changes the effort at
 runtime and keeps it in `$FASTCAR_DATA_DIR/settings.json` on the data disk.
 

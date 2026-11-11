@@ -192,11 +192,11 @@ recurses forever.
 |---|---|---|
 | `DATABASE_URL` | Postgres connection | required |
 | `INCEPTION_API_KEY` | Conductor model auth (Mercury) | required unless mock |
-| `INCEPTION_MODEL` | InceptionLabs chat model id for the conductor | `mercury-2.5` |
+| `INCEPTION_MODEL` | InceptionLabs chat model id for the conductor | `mercury-3` |
 | `INCEPTION_MAX_TOKENS` | `max_tokens` per conductor request — budget shared by Mercury's reasoning and its answer; raise it if high-effort turns end with `finish_reason: "length"` | `16384` |
 | `CONDUCTOR_REASONING_EFFORT` | Default `reasoning_effort`: `instant`, `medium`, `high`. Settings → General overrides it at runtime (stored in `<data dir>/settings.json`); an agent that sets its own effort ignores both | `medium` |
 | `OPENROUTER_API_KEY` | Subagents + transcription | required unless mock |
-| `MAXCODING_MODEL` | OpenRouter slug for the heavy coding subagent | `anthropic/claude-sonnet-4.5` |
+| `MAXCODING_MODEL` | OpenRouter slug for the heavy coding subagent | `z-ai/glm-5.3` |
 | `MINIMODEL_MODEL` | OpenRouter slug for the fast/cheap subagent | `google/gemini-2.5-flash-lite` |
 | `TRANSCRIBE_MODEL` | OpenRouter STT model | `openai/whisper-large-v3` |
 | `TAVILY_API_KEY` | Web search | optional |

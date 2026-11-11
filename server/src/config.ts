@@ -184,7 +184,7 @@ export function loadConfig(): Config {
     mcpDir: path.resolve(env("FASTCAR_MCP_DIR") ?? path.join(dataDir, "mcp")),
     gitName: env("FASTCAR_GIT_NAME"),
     gitEmail: env("FASTCAR_GIT_EMAIL"),
-    maxcodingModel: env("MAXCODING_MODEL") ?? "anthropic/claude-sonnet-4.5",
+    maxcodingModel: env("MAXCODING_MODEL") ?? "z-ai/glm-5.3",
     minimodelModel: env("MINIMODEL_MODEL") ?? "google/gemini-2.5-flash-lite",
     transcribeModel: env("TRANSCRIBE_MODEL") ?? "openai/whisper-large-v3",
     tavilyApiKey: env("TAVILY_API_KEY"),
@@ -196,7 +196,7 @@ export function loadConfig(): Config {
     inceptionBaseUrl: mock
       ? `http://127.0.0.1:${mockPort}/v1`
       : "https://api.inceptionlabs.ai/v1",
-    inceptionModel: env("INCEPTION_MODEL") ?? "mercury-2.5",
+    inceptionModel: env("INCEPTION_MODEL") ?? "mercury-3",
     inceptionMaxTokens: Number(env("INCEPTION_MAX_TOKENS") ?? 16384),
     conductorReasoningEffort: reasoningEffortEnv("CONDUCTOR_REASONING_EFFORT", "medium"),
     adminToken: env("FASTCAR_ADMIN_TOKEN"),

@@ -209,7 +209,7 @@ export interface AppSettingsResponse {
     publicUrlFromEnv: boolean;
   };
   conductor: {
-    /** Provider/model id the conductor runs on, e.g. inceptionlabs/mercury-2.5. */
+    /** Provider/model id the conductor runs on, e.g. inceptionlabs/mercury-3. */
     model: string;
     reasoningEffort: ReasoningEffort;
     /** Effort baked in by env (CONDUCTOR_REASONING_EFFORT) — what "reset" would restore. */
