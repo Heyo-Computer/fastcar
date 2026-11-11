@@ -535,7 +535,10 @@ export class ThreadManager {
 
     // Fire and forget, like the prompt-thread path: a scheduler tick must not
     // block on a run that may take minutes.
-    void this.runScheduledPrompt(rec.id, schedule).catch((err) => {
+    // Models don't know today's date; a scheduled job ("last 7 days",
+    // "today's prospects") is wrong without it.
+    const prompt = `${scheduledRunHeader(new Date(), schedule.timezone)}\n\n${schedule.prompt}`;
+    void this.runScheduledPrompt(rec.id, { ...schedule, prompt }).catch((err) => {
       console.error(`scheduled run ${rec.id} failed:`, err);
     });
     return rec.id;
@@ -1417,4 +1420,23 @@ export function lastAssistantError(messages: readonly unknown[]): string | null 
     return `Model request failed: ${m.errorMessage || "unknown error"}`;
   }
   return null;
+}
+
+/** "[Scheduled run · Tuesday 2026-11-10 23:05 (America/Denver)]" */
+export function scheduledRunHeader(now: Date, timezone: string): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      weekday: "long",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .map((p) => [p.type, p.value]),
+  );
+  return `[Scheduled run · ${parts.weekday} ${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} (${timezone})]`;
 }

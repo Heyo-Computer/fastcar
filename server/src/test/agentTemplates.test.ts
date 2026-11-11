@@ -161,3 +161,11 @@ test("lastAssistantError: provider failures are not silent successes", async () 
     null,
   );
 });
+
+test("scheduled runs are told the date in their timezone", async () => {
+  const { scheduledRunHeader } = await import("../threads/manager.js");
+  // 2026-11-11 06:30 UTC is still the 10th in Denver.
+  const at = new Date("2026-11-11T06:30:00Z");
+  assert.equal(scheduledRunHeader(at, "America/Denver"), "[Scheduled run · Tuesday 2026-11-10 23:30 (America/Denver)]");
+  assert.equal(scheduledRunHeader(at, "UTC"), "[Scheduled run · Wednesday 2026-11-11 06:30 (UTC)]");
+});

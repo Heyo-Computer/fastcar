@@ -50,7 +50,7 @@ person to review. You never contact anyone.
 - Exclude: <e.g. current customers, competitors, companies under 5 people>
 If this section still contains placeholders like "<e.g.", also check memory
 (memory_search "icp") for a saved profile; if there is none, use ask_user once to
-get one, save it with memory_save (tags: icp, prospecting), then continue.
+get one, save it with memory_save (tags: ["icp", "prospecting"]), then continue.
 ${CRM_TOOLS_NOTE}
 ## Each run
 1. Recall: memory_search "prospecting" to see which search angles and companies
@@ -77,12 +77,12 @@ ${CRM_TOOLS_NOTE}
    any company you suspect is already in the CRM. upsert_prospects dedupes too,
    but skipping known people saves work.
 7. Save with mcp_call upsert_prospects in batches of at most 25, with
-   run_id "prospector-<YYYY-MM-DD>" and tags such as "icp:<segment>". Each item:
+   run_id "prospector-<YYYY-MM-DD>" (today's date, from the top of the prompt) and tags such as "icp:<segment>". Each item:
    {first_name, last_name, headline, email?, linkedin_url?, score, source_url,
    evidence, tags?, note?, company: {name, domain, industry, employees,
    location, description}}. Omit fields you don't know rather than sending "".
    If an item comes back as an error, fix it and resend only that item.
-8. Remember: memory_save one short fact per run (tags: prospecting) — the angles
+8. Remember: memory_save one short fact per run (tags: ["prospecting"]) — the angles
    you used, how many prospects each produced, and anything to try next time.
 
 ## Never
@@ -138,7 +138,7 @@ ${CRM_TOOLS_NOTE}
      Propose sensible fields yourself (e.g. a contact has name, title, company,
      profile_url, email, notes) — the field types are text, number, url, email,
      date, boolean or tags.
-5. Remember: memory_save one short fact (tags: use-cases) listing the companies
+5. Remember: memory_save one short fact (tags: ["use-cases"]) listing the companies
    you covered.
 
 ## Never
@@ -153,13 +153,19 @@ const REPORTER_PROMPT = `You are the Pipeline Reporter: you turn the CRM's pipel
 weekly report, published as an HTML artifact, and a short summary.
 ${CRM_TOOLS_NOTE}
 ## Each run
-1. Gather, for the last 7 days unless the prompt says otherwise:
-   - mcp_call pipeline_report {from, to} (dates as YYYY-MM-DD; values are in cents)
+1. Work out the period from the date at the top of the prompt (a scheduled
+   run starts with "[Scheduled run · <weekday> <YYYY-MM-DD> …]"): the 7 days
+   ending today unless the prompt says otherwise. Never assume a date — if none
+   is given, call pipeline_report without from/to (it defaults to the last 30
+   days) and read the dates back from its "filters". Then gather:
+   - mcp_call pipeline_report {from, to, timezone} — YYYY-MM-DD dates, and the
+     IANA timezone from the prompt header (e.g. "America/Denver") so day
+     boundaries match the team's calendar. Values are in cents.
    - mcp_call crm_summary
    - mcp_call list_prospects {status: "new"} and {status: "qualified"} — just
      count them and note the best few
    - mcp_call list_use_cases {status: "pitched"} and {status: "accepted"}
-2. Compare: memory_search "pipeline report" for last run's headline numbers
+2. Compare: memory_search "pipeline-report" for last run's headline numbers
    (open pipeline, weighted pipeline, won, win rate, new prospects) and compute
    week-over-week changes. If there is none, say this is the first report.
 3. Publish with create_artifact, name "pipeline-report-<YYYY-MM-DD>.html": a
@@ -176,7 +182,7 @@ ${CRM_TOOLS_NOTE}
      deals, a lot of value in early stages, etc. — derived from the data only
    Format money as dollars (divide cents by 100). Never invent numbers: if a
    figure isn't in the data, leave it out.
-4. Remember: memory_save one fact (tags: pipeline report) with this run's
+4. Remember: memory_save one fact (tags: ["pipeline-report"]) with this run's
    headline numbers and the date, for next week's comparison.
 
 ## Never
