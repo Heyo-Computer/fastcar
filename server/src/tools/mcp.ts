@@ -208,12 +208,32 @@ export function createMcpTools(mcp: McpManager, allowedServers?: readonly string
       // nesting them under `arguments`; fold any such stray keys back in.
       const { server: _s, tool: _t, arguments: nested, ...flat } = params as Record<string, unknown>;
       const args = { ...flat, ...((nested as Record<string, unknown> | undefined) ?? {}) };
-      const text = await mcp.callTool(params.server, params.tool, args, signal);
-      return { content: [{ type: "text", text }], details: { server: params.server, tool: params.tool } };
+      const raw = await mcp.callTool(params.server, params.tool, args, signal);
+      const text = capMcpResult(raw);
+      return {
+        content: [{ type: "text", text }],
+        details: { server: params.server, tool: params.tool, truncated: text.length !== raw.length },
+      };
     },
   });
 
   return [install, remove, listServers, listTools, call];
+}
+
+/**
+ * Largest mcp_call result passed to the model. A list tool asked for
+ * everything can return megabytes; contextPruning only trims results a few
+ * rounds later, so without a cap one call can blow the context window.
+ */
+export const MCP_RESULT_MAX_CHARS = 40_000;
+
+export function capMcpResult(text: string, max = MCP_RESULT_MAX_CHARS): string {
+  if (text.length <= max) return text;
+  return (
+    text.slice(0, max) +
+    `\n\n[… mcp_call result truncated: showing ${max.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters. ` +
+    "Ask for less — use the tool's limit/offset/filter arguments — rather than re-running the same call.]"
+  );
 }
 
 function stringMap(v: unknown): Record<string, string> | undefined {

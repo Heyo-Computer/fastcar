@@ -831,6 +831,11 @@ export class ThreadManager {
   private async runPrompt(rt: ThreadRuntime, conductor: AgentSessionHandle, text: string): Promise<void> {
     try {
       await conductor.session.prompt(text);
+      // A provider failure (bad model slug, 402, outage) doesn't reject:
+      // Pi ends the turn with an assistant message whose stopReason is
+      // "error". Without this check the run reads as a silent success.
+      const failure = lastAssistantError(conductor.session.messages);
+      if (failure) throw new Error(failure);
       await threadsDb.updateThread(rt.id, { lastError: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1397,4 +1402,19 @@ function timingSafeEqualString(a: string, b: string): boolean {
   const bb = Buffer.from(b, "utf8");
   if (ab.length !== bb.length) return false;
   return crypto.timingSafeEqual(ab, bb);
+}
+
+/**
+ * The error a run ended on, if its final assistant message failed. Only the
+ * last assistant message counts — Pi retries transient errors, and an earlier
+ * failed attempt followed by a good answer is a success.
+ */
+export function lastAssistantError(messages: readonly unknown[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; stopReason?: string; errorMessage?: string } | undefined;
+    if (m?.role !== "assistant") continue;
+    if (m.stopReason !== "error") return null;
+    return `Model request failed: ${m.errorMessage || "unknown error"}`;
+  }
+  return null;
 }

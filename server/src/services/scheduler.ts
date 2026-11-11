@@ -25,20 +25,25 @@ const MAX_CATCH_UP = 5;
 
 export class ScheduleValidationError extends Error {}
 
-/** Valid IANA zone? Node ships the list, so this needs no dependency. */
+/**
+ * Valid IANA zone? Node ships the list, so this needs no dependency. The list
+ * holds canonical names only — newer ICU leaves out aliases such as "UTC" and
+ * "Etc/UTC", which is also this module's default — so anything the list lacks
+ * gets a second chance through Intl.DateTimeFormat, which accepts aliases and
+ * throws on unknown zones.
+ */
 function isValidTimezone(tz: string): boolean {
   try {
-    return (Intl as unknown as { supportedValuesOf(k: string): string[] })
-      .supportedValuesOf("timeZone")
-      .includes(tz);
+    const known = (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf("timeZone");
+    if (known.includes(tz)) return true;
   } catch {
-    // Older runtimes without supportedValuesOf: fall back to a format attempt.
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: tz });
-      return true;
-    } catch {
-      return false;
-    }
+    // Older runtimes without supportedValuesOf: fall through.
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
   }
 }
 

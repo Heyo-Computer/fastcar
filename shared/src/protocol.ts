@@ -368,6 +368,46 @@ export interface AgentsResponse {
   agents: AgentDef[];
 }
 
+/** A ready-made agent offered in the Agents view (server/src/services/agentTemplates.ts). */
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  description: string;
+  avatar: string;
+  tools: string[];
+  /** MCP servers the agent needs (default names; install may map them). */
+  requiresMcp: string[];
+  reasoningEffort?: ReasoningEffort;
+  /** Created disabled on install. */
+  schedule?: { name: string; cron: string; prompt: string };
+}
+
+export interface AgentTemplateListing extends AgentTemplate {
+  /** Id of an active agent already installed from this template, if any. */
+  installedAgentId: string | null;
+}
+
+export interface AgentTemplatesResponse {
+  templates: AgentTemplateListing[];
+  /** Installed MCP server names, so the UI can flag a missing CRM. */
+  mcpServers: string[];
+}
+
+export interface InstallAgentTemplateRequest {
+  /** Name LoopsCRM is installed under (default "loopscrm"). */
+  crmServer?: string;
+  /** IANA timezone for the schedule (default UTC). */
+  timezone?: string;
+  /** Agent slug (default: the template id). Lets one template be installed
+   *  more than once, e.g. "prospector-fintech". */
+  slug?: string;
+}
+
+export interface InstallAgentTemplateResponse {
+  agent: AgentDef;
+  scheduleId: string | null;
+}
+
 /** One selectable model in the agent builder. */
 export interface ModelOption {
   provider: AgentModelProvider;

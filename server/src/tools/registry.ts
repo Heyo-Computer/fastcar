@@ -34,7 +34,7 @@ import { createReminderTools } from "./reminders.js";
 import { createRunSubagentTool, type SubagentEventSink } from "./runSubagent.js";
 import { createSignalTools } from "./signal.js";
 import { createSubmitPlanTool, type SubmitPlanBridge } from "./submitPlan.js";
-import { createWebSearchTool } from "./webSearch.js";
+import { createWebExtractTool, createWebSearchTool } from "./webSearch.js";
 
 export type ToolCategory =
   | "filesystem"
@@ -125,7 +125,7 @@ const GROUP_FACTORIES: Record<ToolGroup, (ctx: ToolContext) => ToolDefinition[]>
   ask: (c) => [createAskUserTool(c.askBridge!)],
   plan: (c) => [createSubmitPlanTool(c.planBridge!)],
   memory: (c) => createMemoryTools(c.threadId),
-  web: (c) => [createWebSearchTool(c.cfg)],
+  web: (c) => [createWebSearchTool(c.cfg), createWebExtractTool(c.cfg)],
   browser: (c) => [createBrowserCheckTool(c.cfg)],
   browser_session: (c) => createBrowserTools(c.browsers!, c.threadId, c.cfg.workdir),
   email: (c) => createEmailTools(c.email!),
@@ -237,6 +237,15 @@ export const TOOLS: readonly ToolDef[] = [
     name: "web_search",
     label: "Web search",
     description: "Search the web via Tavily.",
+    category: "web",
+    builtin: false,
+    mutating: false,
+    group: "web",
+  },
+  {
+    name: "web_extract",
+    label: "Web extract",
+    description: "Read the main text of web pages via Tavily, without a browser.",
     category: "web",
     builtin: false,
     mutating: false,

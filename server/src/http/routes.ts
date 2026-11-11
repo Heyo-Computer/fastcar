@@ -10,6 +10,7 @@ import type {
   ArtifactsTreeResponse,
   CommandsResponse,
   CreateArtifactResponse,
+  InstallAgentTemplateRequest,
   InstallMcpRequest,
   McpServersResponse,
   MentionsResponse,
@@ -54,6 +55,7 @@ import type { BrowserSessions } from "../services/browserSessions.js";
 import type { AppSettings } from "../services/appSettings.js";
 import type { SubagentSettings } from "../services/subagentSettings.js";
 import { AgentValidationError, type AgentService } from "../services/agents.js";
+import { installAgentTemplate, listAgentTemplates, TemplateInstallError } from "../services/agentTemplates.js";
 import { listAgentModels } from "../pi/runtime.js";
 import type { FastcarModels } from "../pi/runtime.js";
 
@@ -427,6 +429,31 @@ export function registerRoutes(
       }
     },
   );
+
+  // --- agent templates -------------------------------------------------------
+
+  app.get("/api/agent-templates", async (_req, reply) => {
+    if (!deps.agents) return reply.code(503).send({ error: "agents are not enabled" });
+    return listAgentTemplates({ cfg, agents: deps.agents, scheduler: deps.scheduler, mcp: deps.mcp });
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agent-templates/:id/install", async (req, reply) => {
+    if (!deps.agents) return reply.code(503).send({ error: "agents are not enabled" });
+    const caller = callerFromRequest(cfg, req);
+    if (!caller.isAdmin) return reply.code(403).send({ error: "admin only" });
+    try {
+      const { agent, scheduleId } = await installAgentTemplate(
+        { cfg, agents: deps.agents, scheduler: deps.scheduler, mcp: deps.mcp },
+        req.params.id,
+        (req.body ?? {}) as InstallAgentTemplateRequest,
+        caller.ownerId ?? null,
+      );
+      return reply.code(201).send({ agent: deps.agents.toDef(agent), scheduleId });
+    } catch (err) {
+      if (err instanceof TemplateInstallError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+  });
 
   /** Everything this agent has published, newest first — its "Output" tab. */
   app.get<{ Params: { id: string } }>("/api/agents/:id/artifacts", async (req) => {

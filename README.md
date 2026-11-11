@@ -209,6 +209,7 @@ recurses forever.
 | `FASTCAR_MOCK` | `1` = keyless mock mode | `0` |
 | `FASTCAR_ENV_FILE` | Explicit env file to load instead of `.env` | unset |
 | `PORT` | HTTP port | `3000` |
+| `FASTCAR_HOST` | Interface to bind; `127.0.0.1` keeps a local dev server off the LAN | `0.0.0.0` |
 | `FASTCAR_PUBLIC_URL` | Externally reachable origin: the prefix of the public artifact URLs agents hand out, and of the OAuth redirect URI registered with remote MCP servers — so it must be the address your browser actually uses | `http://localhost:$PORT` |
 | `SIGNAL_ACCOUNT` | Signal account (international format, `+15551234567`) the `signal_*` tools act as. Unset = Signal off | unset |
 | `SIGNAL_CLI_PATH` | signal-cli executable | `signal-cli` on `PATH` |
@@ -420,6 +421,34 @@ recurses forever.
   - They use the same Chromium as `browser_check` (`FASTCAR_CHROMIUM_PATH`).
 - While the agent is running, sending a message **steers** it; ◼ Stop aborts
   (cascading into any running subagents).
+
+## Sales agents (LoopsCRM)
+
+The Agents view has three **sales templates** that work a [LoopsCRM](https://github.com/Heyo-Computer/loopscrm) instance over MCP:
+
+| Template | What it does | Schedule (created **off**) |
+|---|---|---|
+| 🔭 **Prospector** | Finds companies and people that fit your ideal customer profile. Reads their sites and job posts with `web_search` / `web_extract`, scores each 0–100 with a one-line reason, and saves them with `upsert_prospects`. It never contacts anyone and never guesses email addresses. | weekdays 08:00 |
+| 💡 **Use-case Scout** | For qualified or high-scoring prospect companies, researches what they do and records 2–3 specific Polymorphic-style data-capture tools each could use (`add_use_case`, with a structured spec and an opening pitch). | weekdays 10:00 |
+| 📈 **Pipeline Reporter** | Reads `pipeline_report`, prospects and use cases, compares with last week (memory), and publishes a self-contained HTML report as an artifact. | Mondays 07:30 |
+
+**Setup**
+
+1. In LoopsCRM, mint an app-token: `heyctl token mint loopscrm-agent -d loopscrm -q`. Make sure the token can write; a view-only token may not.
+2. In fastcar's MCP panel, install the remote server `https://<crm-host>/mcp` under the name `loopscrm`, with these headers:
+   - `Authorization: Bearer applb_…`
+   - `X-Loopscrm-Agent: fastcar` (optional; attributes CRM changes to `agent:fastcar`)
+3. Agents → **Install** a template. This creates an ordinary, editable agent. It uses the `MAXCODING_MODEL` on `SUBAGENT_PROVIDER` and can only reach the `loopscrm` MCP server. Its schedule is created disabled.
+4. **Edit the Prospector's "Ideal customer profile" section** before enabling its schedule. Otherwise its first run stops to ask you for one.
+5. Turn the schedules on in the agent's Schedules tab.
+
+**Safety**
+
+- LoopsCRM keeps every new prospect unsubscribed and held out of Loops until a person converts it on the CRM's Prospects page.
+- The templates' prompts forbid status changes, sends and deletes.
+- The templates hold no email or Signal tools.
+
+The templates live in `server/src/services/agentTemplates.ts`.
 
 ## Signal
 
