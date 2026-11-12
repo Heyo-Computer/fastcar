@@ -119,7 +119,8 @@ async function shutdown(signal: string): Promise<void> {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-await app.listen({ port: cfg.port, host: "0.0.0.0" });
+// FASTCAR_HOST=127.0.0.1 keeps a local dev server off the LAN; the VM needs 0.0.0.0.
+await app.listen({ port: cfg.port, host: process.env.FASTCAR_HOST?.trim() || "0.0.0.0" });
 console.log(
   `fastcar listening on :${cfg.port} (mock=${cfg.mock}, workdir=${cfg.workdir})`,
 );

@@ -535,7 +535,10 @@ export class ThreadManager {
 
     // Fire and forget, like the prompt-thread path: a scheduler tick must not
     // block on a run that may take minutes.
-    void this.runScheduledPrompt(rec.id, schedule).catch((err) => {
+    // Models don't know today's date; a scheduled job ("last 7 days",
+    // "today's prospects") is wrong without it.
+    const prompt = `${scheduledRunHeader(new Date(), schedule.timezone)}\n\n${schedule.prompt}`;
+    void this.runScheduledPrompt(rec.id, { ...schedule, prompt }).catch((err) => {
       console.error(`scheduled run ${rec.id} failed:`, err);
     });
     return rec.id;
@@ -831,6 +834,11 @@ export class ThreadManager {
   private async runPrompt(rt: ThreadRuntime, conductor: AgentSessionHandle, text: string): Promise<void> {
     try {
       await conductor.session.prompt(text);
+      // A provider failure (bad model slug, 402, outage) doesn't reject:
+      // Pi ends the turn with an assistant message whose stopReason is
+      // "error". Without this check the run reads as a silent success.
+      const failure = lastAssistantError(conductor.session.messages);
+      if (failure) throw new Error(failure);
       await threadsDb.updateThread(rt.id, { lastError: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1397,4 +1405,38 @@ function timingSafeEqualString(a: string, b: string): boolean {
   const bb = Buffer.from(b, "utf8");
   if (ab.length !== bb.length) return false;
   return crypto.timingSafeEqual(ab, bb);
+}
+
+/**
+ * The error a run ended on, if its final assistant message failed. Only the
+ * last assistant message counts — Pi retries transient errors, and an earlier
+ * failed attempt followed by a good answer is a success.
+ */
+export function lastAssistantError(messages: readonly unknown[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; stopReason?: string; errorMessage?: string } | undefined;
+    if (m?.role !== "assistant") continue;
+    if (m.stopReason !== "error") return null;
+    return `Model request failed: ${m.errorMessage || "unknown error"}`;
+  }
+  return null;
+}
+
+/** "[Scheduled run · Tuesday 2026-11-10 23:05 (America/Denver)]" */
+export function scheduledRunHeader(now: Date, timezone: string): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      weekday: "long",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .map((p) => [p.type, p.value]),
+  );
+  return `[Scheduled run · ${parts.weekday} ${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} (${timezone})]`;
 }

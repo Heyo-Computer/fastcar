@@ -57,6 +57,9 @@ test("cron maths", async (t) => {
     assert.equal(validateCron("not a cron", "UTC").ok, false);
     assert.equal(validateCron("0 7 * * *", "Mars/Olympus_Mons").ok, false);
     assert.equal(validateCron("0 7 * * *", "America/Los_Angeles").ok, true);
+    // The default zone is an alias that Intl.supportedValuesOf may omit.
+    assert.equal(validateCron("0 7 * * *", "UTC").ok, true);
+    assert.equal(validateCron("0 7 * * *", "Etc/UTC").ok, true);
   });
 
   await t.test("preview shows consecutive future firings", () => {
